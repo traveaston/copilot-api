@@ -1838,14 +1838,14 @@
                   <td class="px-4 py-2 max-w-[170px] truncate whitespace-nowrap" style="color: var(--color-fg-dark);" title="${escapeHtml(
                     event.created_at_utc
                   )}">${escapeHtml(formatDateTime(event.created_at_ms))}</td>
-                  <td class="px-4 py-2 max-w-[100px] truncate" style="color: var(--color-fg-lightest);" title="${escapeHtml(
+                  <td class="hidden px-4 py-2 max-w-[100px] truncate" style="color: var(--color-fg-lightest);" title="${escapeHtml(
                     userId
                   )}">${escapeHtml(userId)}</td>
 
                   <td class="px-4 py-2 max-w-[140px] truncate" style="color: var(--color-fg-lightest);" title="${escapeHtml(
                     event.model
                   )}">${escapeHtml(event.model)}</td>
-                  <td class="px-4 py-2 max-w-[180px] truncate font-mono" style="color: var(--color-fg-dark);" title="${escapeHtml(
+                  <td class="px-4 py-2 max-w-[260px] truncate font-mono" style="color: var(--color-fg-dark);" title="${escapeHtml(
                     sessionId
                   )}">${escapeHtml(sessionId)}</td>
                   <td class="px-4 py-2 max-w-[200px] truncate font-mono" style="color: var(--color-fg-dark);" title="${escapeHtml(
@@ -1882,7 +1882,7 @@
                 <thead>
                   <tr>
                     <th class="px-4 py-2 font-semibold">Time</th>
-                    <th class="px-4 py-2 font-semibold">User</th>
+                    <th class="hidden px-4 py-2 font-semibold">User</th>
 
                     <th class="px-4 py-2 font-semibold">Model</th>
                     <th class="px-4 py-2 font-semibold">Session</th>
