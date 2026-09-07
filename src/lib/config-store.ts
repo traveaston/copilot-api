@@ -38,7 +38,8 @@ export interface AppConfig {
   messageApiWebSearchModel?: string
   // Model used for Claude Code background security-monitor requests on
   // /v1/messages and provider message APIs: requests without tools, with
-  // `stop_sequences: ["</block>"]` and a system block starting with
+  // allowed stop sequences (["</block>"], ["</severity>"], empty, or omitted)
+  // and a system block starting with
   // "You are a security monitor for autonomous AI coding agents.".
   // A `provider/model` alias is forwarded to that provider's message API on
   // the top-level route. Provider message routes use the configured value on

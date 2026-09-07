@@ -732,6 +732,67 @@ describe("messages handler orchestration", () => {
     expect(findEndpointModel).toHaveBeenCalledWith("auto-model")
   })
 
+  test("applies Claude auto model override with </severity> stop sequence", async () => {
+    claudeAutoModel = "auto-model"
+    selectedModel = {
+      id: "auto-model",
+      supported_endpoints: ["/v1/messages"],
+    }
+
+    const app = createApp()
+    const response = await app.request("/", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "anthropic-beta": "warmup-beta",
+      },
+      body: JSON.stringify(
+        createPayload({
+          stop_sequences: ["</severity>"],
+          system: [
+            {
+              type: "text",
+              text: "You are a security monitor for autonomous AI coding agents. Check the changes.",
+            },
+          ],
+        }),
+      ),
+    })
+
+    expect(response.status).toBe(200)
+    expect(await response.text()).toBe("messages")
+    expect(findEndpointModel).toHaveBeenCalledTimes(1)
+    expect(findEndpointModel).toHaveBeenCalledWith("auto-model")
+  })
+
+  test("applies Claude auto model override in fast mode (no stop sequences)", async () => {
+    claudeAutoModel = "auto-model"
+    selectedModel = {
+      id: "auto-model",
+      supported_endpoints: ["/v1/messages"],
+    }
+
+    const app = createApp()
+    const response = await app.request("/", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "anthropic-beta": "warmup-beta",
+      },
+      body: JSON.stringify(
+        createPayload({
+          system:
+            "You are a security monitor for autonomous AI coding agents. Check the changes.",
+        }),
+      ),
+    })
+
+    expect(response.status).toBe(200)
+    expect(await response.text()).toBe("messages")
+    expect(findEndpointModel).toHaveBeenCalledTimes(1)
+    expect(findEndpointModel).toHaveBeenCalledWith("auto-model")
+  })
+
   test("routes warmup request to provider alias when smallModel is a provider alias", async () => {
     smallModel = "custom-provider/small-net"
     const originalResolveProviderConfig =

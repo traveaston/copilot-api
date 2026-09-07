@@ -35,6 +35,7 @@ const SUBAGENT_START_HOOK_ADDITIONAL_PREFIX = "SubagentStart hook additional"
 export const claudeAutoModelSystemPromptStart =
   "You are a security monitor for autonomous AI coding agents."
 export const claudeAutoModelStopSequence = "</block>"
+export const claudeAutoModelSeverityStopSequence = "</severity>"
 
 const IDE_GET_DIAGNOSTICS_TOOL = "mcp__ide__getDiagnostics"
 const IDE_GET_DIAGNOSTICS_DESCRIPTION =
@@ -390,8 +391,8 @@ export const getCompactType = (
 
 /**
  * True for Claude Code background security-monitor requests: no tools,
- * `stop_sequences: ["</block>"]`, and a system prompt starting with the
- * security-monitor prefix. These can be rerouted via `claudeAutoModel`.
+ * allowed stop sequences (or none in fast mode), and a system prompt starting
+ * with the security-monitor prefix. These can be rerouted via `claudeAutoModel`.
  */
 export const isClaudeAutoModelRequest = (
   payload: AnthropicMessagesPayload,
@@ -401,17 +402,23 @@ export const isClaudeAutoModelRequest = (
   }
 
   const stopSequences = payload.stop_sequences
-  if (
-    !Array.isArray(stopSequences)
-    || stopSequences.length !== 1
-    || stopSequences[0] !== claudeAutoModelStopSequence
-  ) {
-    return false
+  if (stopSequences !== undefined) {
+    if (!Array.isArray(stopSequences) || stopSequences.length > 1) {
+      return false
+    }
+    const hasDisallowedStopSequence = stopSequences.some(
+      (seq) =>
+        seq !== claudeAutoModelStopSequence
+        && seq !== claudeAutoModelSeverityStopSequence,
+    )
+    if (hasDisallowedStopSequence) {
+      return false
+    }
   }
 
   const system = payload.system
   if (typeof system === "string") {
-    return system.startsWith(claudeAutoModelSystemPromptStart)
+    return system.trimStart().startsWith(claudeAutoModelSystemPromptStart)
   }
   if (!Array.isArray(system)) {
     return false
@@ -420,7 +427,7 @@ export const isClaudeAutoModelRequest = (
   return system.some(
     (block) =>
       typeof block.text === "string"
-      && block.text.startsWith(claudeAutoModelSystemPromptStart),
+      && block.text.trimStart().startsWith(claudeAutoModelSystemPromptStart),
   )
 }
 

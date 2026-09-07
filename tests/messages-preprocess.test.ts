@@ -20,7 +20,11 @@ await mock.module("~/lib/config", () => ({
 
 import {
   applyLastMessageCacheControl,
+  claudeAutoModelSeverityStopSequence,
+  claudeAutoModelStopSequence,
+  claudeAutoModelSystemPromptStart,
   getLastMessageContentCacheControl,
+  isClaudeAutoModelRequest,
   mergeToolResultForClaude,
   normalizeSystemMessages,
   prepareMessagesApiPayload,
@@ -1451,5 +1455,160 @@ describe("prepareMessagesApiPayload", () => {
       ttl: "1h",
     })
     expect(payload.cache_control).toBeUndefined()
+  })
+})
+
+describe("isClaudeAutoModelRequest", () => {
+  const validSystemPrompt = `${claudeAutoModelSystemPromptStart}\nAnalyze the following commands for safety.`
+
+  test("matches standard security monitor request with </block> stop sequence", () => {
+    const payload: AnthropicMessagesPayload = {
+      model: "claude-sonnet-4.5",
+      max_tokens: 1024,
+      messages: [{ role: "user", content: "analyze" }],
+      system: validSystemPrompt,
+      stop_sequences: [claudeAutoModelStopSequence],
+    }
+
+    expect(isClaudeAutoModelRequest(payload)).toBe(true)
+  })
+
+  test("matches severity scoring request with </severity> stop sequence", () => {
+    const payload: AnthropicMessagesPayload = {
+      model: "claude-sonnet-4.5",
+      max_tokens: 1024,
+      messages: [{ role: "user", content: "analyze" }],
+      system: [
+        {
+          type: "text",
+          text: validSystemPrompt,
+        },
+      ],
+      stop_sequences: [claudeAutoModelSeverityStopSequence],
+    }
+
+    expect(isClaudeAutoModelRequest(payload)).toBe(true)
+  })
+
+  test("matches fast classifier request without stop_sequences", () => {
+    const payload: AnthropicMessagesPayload = {
+      model: "claude-sonnet-4.5",
+      max_tokens: 1024,
+      messages: [{ role: "user", content: "analyze" }],
+      system: validSystemPrompt,
+    }
+
+    expect(isClaudeAutoModelRequest(payload)).toBe(true)
+  })
+
+  test("matches request with empty stop_sequences array", () => {
+    const payload: AnthropicMessagesPayload = {
+      model: "claude-sonnet-4.5",
+      max_tokens: 1024,
+      messages: [{ role: "user", content: "analyze" }],
+      system: validSystemPrompt,
+      stop_sequences: [],
+    }
+
+    expect(isClaudeAutoModelRequest(payload)).toBe(true)
+  })
+
+  test("matches request with leading whitespace in system prompt", () => {
+    const payload: AnthropicMessagesPayload = {
+      model: "claude-sonnet-4.5",
+      max_tokens: 1024,
+      messages: [{ role: "user", content: "analyze" }],
+      system: `  \n${validSystemPrompt}`,
+      stop_sequences: [claudeAutoModelStopSequence],
+    }
+
+    expect(isClaudeAutoModelRequest(payload)).toBe(true)
+  })
+
+  test("rejects request when tools are provided", () => {
+    const payload: AnthropicMessagesPayload = {
+      model: "claude-sonnet-4.5",
+      max_tokens: 1024,
+      messages: [{ role: "user", content: "analyze" }],
+      system: validSystemPrompt,
+      tools: [
+        {
+          name: "bash",
+          input_schema: { type: "object" },
+        },
+      ],
+    }
+
+    expect(isClaudeAutoModelRequest(payload)).toBe(false)
+  })
+
+  test("rejects request with unexpected stop sequences", () => {
+    const payload: AnthropicMessagesPayload = {
+      model: "claude-sonnet-4.5",
+      max_tokens: 1024,
+      messages: [{ role: "user", content: "analyze" }],
+      system: validSystemPrompt,
+      stop_sequences: ["</custom_stop>"],
+    }
+
+    expect(isClaudeAutoModelRequest(payload)).toBe(false)
+  })
+
+  test("rejects request with multiple stop sequences even if individually allowed", () => {
+    const payload: AnthropicMessagesPayload = {
+      model: "claude-sonnet-4.5",
+      max_tokens: 1024,
+      messages: [{ role: "user", content: "analyze" }],
+      system: validSystemPrompt,
+      stop_sequences: [
+        claudeAutoModelStopSequence,
+        claudeAutoModelSeverityStopSequence,
+      ],
+    }
+
+    expect(isClaudeAutoModelRequest(payload)).toBe(false)
+  })
+
+  test("rejects request when stop_sequences is not an array", () => {
+    const payload = {
+      model: "claude-sonnet-4.5",
+      max_tokens: 1024,
+      messages: [{ role: "user", content: "analyze" }],
+      system: validSystemPrompt,
+      stop_sequences: "</block>",
+    } as unknown as AnthropicMessagesPayload
+
+    expect(isClaudeAutoModelRequest(payload)).toBe(false)
+  })
+
+  test("rejects request when system prompt does not match security monitor prefix", () => {
+    const payload: AnthropicMessagesPayload = {
+      model: "claude-sonnet-4.5",
+      max_tokens: 1024,
+      messages: [{ role: "user", content: "hello" }],
+      system: "You are a helpful coding assistant.",
+      stop_sequences: [claudeAutoModelStopSequence],
+    }
+
+    expect(isClaudeAutoModelRequest(payload)).toBe(false)
+  })
+
+  test("rejects request when system prompt is undefined or empty", () => {
+    const payloadWithoutSystem: AnthropicMessagesPayload = {
+      model: "claude-sonnet-4.5",
+      max_tokens: 1024,
+      messages: [{ role: "user", content: "hello" }],
+      stop_sequences: [claudeAutoModelStopSequence],
+    }
+    expect(isClaudeAutoModelRequest(payloadWithoutSystem)).toBe(false)
+
+    const payloadWithEmptyArray: AnthropicMessagesPayload = {
+      model: "claude-sonnet-4.5",
+      max_tokens: 1024,
+      messages: [{ role: "user", content: "hello" }],
+      system: [],
+      stop_sequences: [claudeAutoModelStopSequence],
+    }
+    expect(isClaudeAutoModelRequest(payloadWithEmptyArray)).toBe(false)
   })
 })
