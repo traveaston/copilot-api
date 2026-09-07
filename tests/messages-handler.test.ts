@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
 import { Hono } from "hono"
 
 import type { AnthropicMessagesPayload } from "~/lib/types/anthropic"
+import type { ResolvedProviderConfig } from "~/lib/config"
 
 import { compactSummaryPromptStart, compactTextOnlyGuard } from "~/lib/compact"
 
@@ -10,6 +11,9 @@ const actualConfigModule = await import("~/lib/config")
 const actualModelsModule = await import("~/lib/models")
 const actualUtilsModule = await import("~/lib/utils")
 const { responsesUtilsDependencies } = await import("~/routes/responses/utils")
+const { providerMessagesHandlerDependencies } = await import(
+  "~/routes/provider/messages/handler"
+)
 
 const state = {
   ...actualStateModule.state,
@@ -21,6 +25,7 @@ let messagesApiEnabled = true
 let responsesApiWebSocketEnabled = true
 let modelMappings: Record<string, string> = {}
 let claudeAutoModel: string | undefined
+let smallModel = "small-model"
 type SelectedModel = {
   id: string
   supported_endpoints?: Array<string>
@@ -66,7 +71,7 @@ await mock.module("~/lib/state", () => ({
 await mock.module("~/lib/config", () => ({
   ...actualConfigModule,
   getClaudeAutoModel: () => claudeAutoModel,
-  getSmallModel: () => "small-model",
+  getSmallModel: () => smallModel,
   isMessagesApiEnabled: () => messagesApiEnabled,
   isResponsesApiWebSocketEnabled: () => responsesApiWebSocketEnabled,
   resolveMappedModel: (model: string) => modelMappings[model] ?? model,
@@ -105,6 +110,7 @@ beforeEach(() => {
   responsesApiWebSocketEnabled = true
   modelMappings = {}
   claudeAutoModel = undefined
+  smallModel = "small-model"
   selectedModel = undefined
 
   responsesUtilsDependencies.isResponsesApiWebSocketEnabled = () =>
@@ -724,6 +730,71 @@ describe("messages handler orchestration", () => {
     expect(await response.text()).toBe("messages")
     expect(findEndpointModel).toHaveBeenCalledTimes(1)
     expect(findEndpointModel).toHaveBeenCalledWith("auto-model")
+  })
+
+  test("routes warmup request to provider alias when smallModel is a provider alias", async () => {
+    smallModel = "custom-provider/small-net"
+    const originalResolveProviderConfig =
+      providerMessagesHandlerDependencies.resolveProviderConfig
+    const originalFetch = globalThis.fetch
+
+    providerMessagesHandlerDependencies.resolveProviderConfig = mock(
+      (provider: string) =>
+        Promise.resolve(
+          provider === "custom-provider" ?
+            ({
+              name: "custom-provider",
+              type: "anthropic",
+              baseUrl: "https://custom.example/api",
+              apiKey: "key",
+            } as ResolvedProviderConfig)
+          : null,
+        ),
+    )
+
+    let capturedRequestBody: Record<string, unknown> | undefined
+    globalThis.fetch = mock((_url: unknown, init?: RequestInit) => {
+      const body = typeof init?.body === "string" ? init.body : "{}"
+      capturedRequestBody = JSON.parse(body) as Record<string, unknown>
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            id: "msg_123",
+            type: "message",
+            role: "assistant",
+            content: [{ type: "text", text: "provider-reply" }],
+          }),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          },
+        ),
+      )
+    }) as unknown as typeof fetch
+
+    try {
+      const app = createApp()
+      const response = await app.request("/", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "anthropic-beta": "warmup-beta",
+        },
+        body: JSON.stringify(createPayload()),
+      })
+
+      expect(response.status).toBe(200)
+      const json = (await response.json()) as {
+        content: Array<{ text: string }>
+      }
+      expect(json.content[0].text).toBe("provider-reply")
+      expect(capturedRequestBody?.model).toBe("small-net")
+      expect(findEndpointModel).not.toHaveBeenCalled()
+    } finally {
+      providerMessagesHandlerDependencies.resolveProviderConfig =
+        originalResolveProviderConfig
+      globalThis.fetch = originalFetch
+    }
   })
 
   test("prefers dispatch-provided session, request, and subagent context", async () => {

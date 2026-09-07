@@ -108,6 +108,25 @@ export async function handleCompletionPayload(
     anthropicPayload.model = claudeAutoModel
   }
 
+  // claude code and opencode compact / auto-continue detection
+  const compactType =
+    dispatchOptions.compactType ?? getCompactType(anthropicPayload)
+  if (compactType) {
+    logger.debug("Compact request type:", compactType)
+  }
+
+  // fix claude code 2.0.28+ warmup request consume premium request, forcing small model if no tools are used
+  // set "CLAUDE_CODE_SUBAGENT_MODEL": "you small model" also can avoid this
+  const anthropicBeta = c.req.header("anthropic-beta")
+  logger.debug("Anthropic Beta header:", anthropicBeta)
+  if (!state.tokenBasedBilling && !shouldUseClaudeAutoModel) {
+    const tools = anthropicPayload.tools
+    const noTools = !tools || tools.length === 0
+    if (anthropicBeta && noTools && compactType === 0) {
+      anthropicPayload.model = getSmallModel()
+    }
+  }
+
   const providerModelAlias = await resolveConfiguredProviderModelAlias(
     anthropicPayload.model,
     providerMessagesHandlerDependencies.resolveProviderConfig,
@@ -136,26 +155,6 @@ export async function handleCompletionPayload(
 
   let sessionId =
     dispatchOptions.sessionId ?? getRootSessionId(anthropicPayload, c)
-
-  // claude code and opencode compact / auto-continue detection
-  const compactType =
-    dispatchOptions.compactType ?? getCompactType(anthropicPayload)
-
-  // fix claude code 2.0.28+ warmup request consume premium request, forcing small model if no tools are used
-  // set "CLAUDE_CODE_SUBAGENT_MODEL": "you small model" also can avoid this
-  const anthropicBeta = c.req.header("anthropic-beta")
-  logger.debug("Anthropic Beta header:", anthropicBeta)
-  if (!state.tokenBasedBilling && !shouldUseClaudeAutoModel) {
-    const tools = anthropicPayload.tools
-    const noTools = !tools || tools.length === 0
-    if (anthropicBeta && noTools && compactType === 0) {
-      anthropicPayload.model = getSmallModel()
-    }
-  }
-
-  if (compactType) {
-    logger.debug("Compact request type:", compactType)
-  }
 
   if (!state.tokenBasedBilling) {
     const lastMessageCacheControl = getLastMessageContentCacheControl(
