@@ -913,6 +913,11 @@ export const prepareMessagesApiPayload = (
   payload: AnthropicMessagesPayload,
   selectedModel?: Model,
 ): void => {
+  const maxOutputTokens = selectedModel?.capabilities?.limits?.max_output_tokens
+  if (maxOutputTokens && maxOutputTokens > 0) {
+    payload.max_tokens = Math.min(payload.max_tokens, maxOutputTokens)
+  }
+
   stripCacheControl(payload)
   applyTopLevelCacheControl(payload)
   stripToolEagerInputStreaming(payload)
@@ -925,7 +930,10 @@ export const prepareMessagesApiPayload = (
   const toolChoice = payload.tool_choice
   const disableThink = toolChoice?.type === "any" || toolChoice?.type === "tool"
 
-  if (selectedModel?.capabilities.supports.adaptive_thinking && !disableThink) {
+  if (
+    selectedModel?.capabilities?.supports?.adaptive_thinking
+    && !disableThink
+  ) {
     payload.thinking = {
       type: "adaptive",
     }
@@ -941,7 +949,8 @@ export const prepareMessagesApiPayload = (
     if (effort === "none" || effort === "minimal") {
       effort = "low"
     }
-    const reasoningEffort = selectedModel.capabilities.supports.reasoning_effort
+    const reasoningEffort =
+      selectedModel?.capabilities?.supports?.reasoning_effort
     if (reasoningEffort && !reasoningEffort.includes(effort)) {
       effort = reasoningEffort.at(-1) as
         | "low"
@@ -955,7 +964,7 @@ export const prepareMessagesApiPayload = (
     }
   }
 
-  const modelSupports = selectedModel?.capabilities.supports
+  const modelSupports = selectedModel?.capabilities?.supports
   if (!modelSupports?.adaptive_thinking) {
     const reasoningEfforts = modelSupports?.reasoning_effort
     if (!reasoningEfforts || reasoningEfforts.length === 0) {

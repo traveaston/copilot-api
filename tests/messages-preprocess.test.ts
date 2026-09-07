@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
 
 import type { AnthropicMessagesPayload } from "~/lib/types/anthropic"
+import type { Model } from "~/lib/types/models"
 
 const actualConfigModule = await import("~/lib/config")
 
@@ -1355,6 +1356,27 @@ describe("prepareMessagesApiPayload", () => {
 
     expect(payload.thinking).toBeUndefined()
     expect(payload.output_config).toBeUndefined()
+  })
+
+  test("caps max_tokens at the selected model output limit", () => {
+    const payload: AnthropicMessagesPayload = {
+      model: "claude-haiku-4.5",
+      max_tokens: 128_000,
+      messages: [{ role: "user", content: "hello" }],
+    }
+
+    prepareMessagesApiPayload(payload, {
+      id: "claude-haiku-4.5",
+      name: "Claude Haiku 4.5",
+      capabilities: {
+        limits: {
+          max_output_tokens: 64_000,
+        },
+        supports: {},
+      },
+    } as unknown as Model)
+
+    expect(payload.max_tokens).toBe(64_000)
   })
 
   test("strips top-level cache_control sent by Zed (minimal-mode shape)", () => {
