@@ -12,6 +12,7 @@ import {
 import { createHandlerLogger, debugJson } from "~/lib/logger"
 import { findEndpointModel } from "~/lib/models"
 import { resolveConfiguredProviderModelAlias } from "~/lib/provider-resolver"
+import { setRequestSessionId } from "~/lib/request-context"
 import { state } from "~/lib/state"
 import type { SubagentMarker } from "~/lib/subagent"
 import type { TokenUsageEndpoint } from "~/lib/token-usage"
@@ -76,6 +77,12 @@ export async function handleCompletionPayload(
   anthropicPayload: AnthropicMessagesPayload,
   dispatchOptions: CompletionPayloadOptions = {},
 ) {
+  let sessionId =
+    dispatchOptions.sessionId ?? getRootSessionId(anthropicPayload, c)
+  if (sessionId) {
+    setRequestSessionId(sessionId)
+  }
+
   const requestedModel = anthropicPayload.model
   if (!dispatchOptions.skipModelMapping) {
     anthropicPayload.model = resolveMappedModel(anthropicPayload.model)
@@ -153,8 +160,10 @@ export async function handleCompletionPayload(
     debugJson(logger, "Detected Subagent marker:", subagentMarker)
   }
 
-  let sessionId =
-    dispatchOptions.sessionId ?? getRootSessionId(anthropicPayload, c)
+  sessionId =
+    sessionId
+    ?? dispatchOptions.sessionId
+    ?? getRootSessionId(anthropicPayload, c)
 
   if (!state.tokenBasedBilling) {
     const lastMessageCacheControl = getLastMessageContentCacheControl(
@@ -183,6 +192,7 @@ export async function handleCompletionPayload(
   if (!sessionId) {
     sessionId = getUUID(requestId)
   }
+  setRequestSessionId(sessionId)
   logger.debug("Extracted session ID:", sessionId)
 
   const selectedModel = findEndpointModel(anthropicPayload.model)

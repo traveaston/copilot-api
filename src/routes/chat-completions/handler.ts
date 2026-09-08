@@ -8,6 +8,7 @@ import { createHandlerLogger, debugJson } from "~/lib/logger"
 import { findEndpointModel } from "~/lib/models"
 import { writeSSEIfConnected } from "~/lib/sse"
 import { resolveConfiguredProviderModelAlias } from "~/lib/provider-resolver"
+import { setRequestSessionId } from "~/lib/request-context"
 import {
   createCopilotTokenUsageRecorder,
   normalizeOpenAIUsage,
@@ -74,6 +75,7 @@ export async function handleCompletion(c: Context) {
   logger.debug("Generated request ID:", requestId)
 
   const sessionId = getUUID(requestId)
+  setRequestSessionId(sessionId)
   logger.debug("Extracted session ID:", sessionId)
   const recordUsage = createCopilotTokenUsageRecorder({
     endpoint: "chat_completions",
