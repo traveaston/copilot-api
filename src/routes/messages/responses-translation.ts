@@ -17,6 +17,8 @@ import {
   getReasoningEffortForModel,
   isGpt56OrAbove,
 } from "~/lib/config"
+import { findEndpointModel } from "~/lib/models"
+import { resolveSupportedReasoningEffort } from "~/lib/reasoning-effort"
 import { requestContext } from "~/lib/request-context"
 import { parseUserIdMetadata } from "~/lib/utils"
 import {
@@ -76,8 +78,26 @@ export { THINKING_TEXT }
 export const REASONING_SUMMARY_SEPARATOR = "\u00A0\n\n"
 const REASONING_SUMMARY_SEPARATOR_PATTERN = /\u00a0\n\n|\u2063\n\n/
 
+// The client can opt out of reasoning entirely, e.g. Claude Code's auto mode
+// classifier. Models that cannot disable it clamp up to their lowest level.
+// An explicitly requested effort still wins, so this only replaces the model
+// default.
+const resolveEffortForDisabledThinking = (
+  payload: AnthropicMessagesPayload,
+) => {
+  if (payload.thinking?.type !== "disabled") {
+    return undefined
+  }
+
+  const supportedEfforts = findEndpointModel(payload.model)?.capabilities
+    .supports.reasoning_effort
+  return resolveSupportedReasoningEffort("none", supportedEfforts)
+}
+
 const resolveReasoningEffort = (payload: AnthropicMessagesPayload) =>
-  payload.output_config?.effort ?? getReasoningEffortForModel(payload.model)
+  payload.output_config?.effort
+  ?? resolveEffortForDisabledThinking(payload)
+  ?? getReasoningEffortForModel(payload.model)
 
 const buildPromptCacheKey = (
   basePromptCacheKey: string | null,

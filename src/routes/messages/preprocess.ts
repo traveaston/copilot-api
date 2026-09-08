@@ -925,7 +925,14 @@ export const prepareMessagesApiPayload = (
   const toolChoice = payload.tool_choice
   const disableThink = toolChoice?.type === "any" || toolChoice?.type === "tool"
 
-  if (selectedModel?.capabilities.supports.adaptive_thinking && !disableThink) {
+  // Allow client to disable thinking, e.g. Claude Code's auto mode classifier.
+  const thinkingDisabledByClient = payload.thinking?.type === "disabled"
+
+  if (
+    selectedModel?.capabilities.supports.adaptive_thinking
+    && !disableThink
+    && !thinkingDisabledByClient
+  ) {
     payload.thinking = {
       type: "adaptive",
     }

@@ -1,6 +1,7 @@
 import type { ToolContentSupportType } from "~/lib/config"
 import type { Model } from "~/lib/types/models"
 
+import { resolveSupportedReasoningEffort } from "~/lib/reasoning-effort"
 import { requestContext } from "~/lib/request-context"
 import { state } from "~/lib/state"
 import {
@@ -111,6 +112,15 @@ function getReasoningEffort(
 ): string | undefined {
   const effort = payload.output_config?.effort
   if (!effort) {
+    // The client can opt out of reasoning entirely, e.g. Claude Code's auto
+    // mode classifier. Models that cannot disable it clamp up to their lowest
+    // supported level. An explicitly requested effort still wins above.
+    if (payload.thinking?.type === "disabled") {
+      return resolveSupportedReasoningEffort(
+        "none",
+        options.reasoningEffortSupport,
+      )
+    }
     return undefined
   }
 

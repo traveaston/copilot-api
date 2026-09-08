@@ -249,6 +249,102 @@ describe("Anthropic to OpenAI translation logic", () => {
     expect(isValidChatCompletionRequest(openAIPayload)).toBe(true)
   })
 
+  test("maps disabled thinking to the lowest supported reasoning effort", () => {
+    const anthropicPayload: AnthropicMessagesPayload = {
+      model: "gemini-3.8-flash",
+      messages: [{ role: "user", content: "Hello!" }],
+      max_tokens: 0,
+      thinking: { type: "disabled" },
+    }
+
+    const openAIPayload = translateToOpenAI(anthropicPayload, {
+      validateReasoningEffort: true,
+      reasoningEffortSupport: ["low", "medium", "high"],
+    })
+
+    expect(openAIPayload.reasoning_effort).toBe("low")
+    expect(isValidChatCompletionRequest(openAIPayload)).toBe(true)
+  })
+
+  test("maps disabled thinking to none when the model supports it", () => {
+    const anthropicPayload: AnthropicMessagesPayload = {
+      model: "gpt-4o",
+      messages: [{ role: "user", content: "Hello!" }],
+      max_tokens: 0,
+      thinking: { type: "disabled" },
+    }
+
+    const openAIPayload = translateToOpenAI(anthropicPayload, {
+      validateReasoningEffort: true,
+      reasoningEffortSupport: ["none", "low", "high"],
+    })
+
+    expect(openAIPayload.reasoning_effort).toBe("none")
+    expect(isValidChatCompletionRequest(openAIPayload)).toBe(true)
+  })
+
+  test("maps disabled thinking to none without capability data", () => {
+    const anthropicPayload: AnthropicMessagesPayload = {
+      model: "gpt-4o",
+      messages: [{ role: "user", content: "Hello!" }],
+      max_tokens: 0,
+      thinking: { type: "disabled" },
+    }
+
+    const openAIPayload = translateToOpenAI(anthropicPayload)
+
+    expect(openAIPayload.reasoning_effort).toBe("none")
+    expect(isValidChatCompletionRequest(openAIPayload)).toBe(true)
+  })
+
+  test("clamps disabled thinking even when effort validation is off", () => {
+    const anthropicPayload: AnthropicMessagesPayload = {
+      model: "gemini-3.8-flash",
+      messages: [{ role: "user", content: "Hello!" }],
+      max_tokens: 0,
+      thinking: { type: "disabled" },
+    }
+
+    const openAIPayload = translateToOpenAI(anthropicPayload, {
+      reasoningEffortSupport: ["low", "medium", "high"],
+    })
+
+    expect(openAIPayload.reasoning_effort).toBe("low")
+  })
+
+  test("lets a requested effort win over disabled thinking", () => {
+    const anthropicPayload: AnthropicMessagesPayload = {
+      model: "gemini-3.8-flash",
+      messages: [{ role: "user", content: "Hello!" }],
+      max_tokens: 0,
+      thinking: { type: "disabled" },
+      output_config: { effort: "high" },
+    }
+
+    const openAIPayload = translateToOpenAI(anthropicPayload, {
+      validateReasoningEffort: true,
+      reasoningEffortSupport: ["low", "medium", "high"],
+    })
+
+    expect(openAIPayload.reasoning_effort).toBe("high")
+  })
+
+  test("omits reasoning_effort when thinking is enabled", () => {
+    const anthropicPayload: AnthropicMessagesPayload = {
+      model: "gemini-3.8-flash",
+      messages: [{ role: "user", content: "Hello!" }],
+      max_tokens: 0,
+      thinking: { type: "enabled", budget_tokens: 1024 },
+    }
+
+    const openAIPayload = translateToOpenAI(anthropicPayload, {
+      validateReasoningEffort: true,
+      reasoningEffortSupport: ["low", "medium", "high"],
+    })
+
+    expect(openAIPayload).not.toHaveProperty("reasoning_effort")
+  })
+
   test("maps thinking budget within selected model limits", () => {
     const originalModels = state.models
     state.models = {

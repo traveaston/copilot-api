@@ -1,8 +1,11 @@
 import { describe, expect, it } from "bun:test"
 
+import { getReasoningEffortForModel } from "~/lib/config"
 import { requestContext } from "~/lib/request-context"
+import { state } from "~/lib/state"
 import { createMcpToolSearchSentinel } from "~/lib/tool-search"
 import type { AnthropicMessagesPayload } from "~/lib/types/anthropic"
+import type { Model } from "~/lib/types/models"
 import type {
   ResponseFunctionCallOutputItem,
   ResponseInputMessage,
@@ -52,6 +55,38 @@ const samplePayload = {
     },
   ],
 } as unknown as AnthropicMessagesPayload
+
+const createReasoningModel = (
+  id: string,
+  reasoningEffort: Array<string>,
+): Model => ({
+  capabilities: {
+    family: "gpt",
+    limits: {},
+    object: "model_capabilities",
+    supports: { reasoning_effort: reasoningEffort },
+    tokenizer: "o200k_base",
+    type: "chat",
+  },
+  id,
+  model_picker_enabled: true,
+  name: id,
+  object: "model",
+  preview: false,
+  supported_endpoints: [],
+  vendor: "openai",
+  version: "1",
+})
+
+const withModels = <T>(models: Array<Model>, run: () => T): T => {
+  const originalModels = state.models
+  state.models = { object: "list", data: models }
+  try {
+    return run()
+  } finally {
+    state.models = originalModels
+  }
+}
 
 const sampleTools = [
   {
@@ -136,6 +171,103 @@ describe("translateAnthropicMessagesToResponsesPayload", () => {
     })
 
     expect(result.reasoning?.effort).toBe("xhigh")
+  })
+
+  it("disables reasoning when the client sends thinking type disabled", () => {
+    const result = withModels(
+      [createReasoningModel(samplePayload.model, ["none", "low", "high"])],
+      () =>
+        translateAnthropicMessagesToResponsesPayload({
+          ...samplePayload,
+          thinking: { type: "disabled" },
+        }),
+    )
+
+    expect(result.reasoning?.effort).toBe("none")
+  })
+
+  it("clamps disabled thinking up to the lowest supported effort", () => {
+    const result = withModels(
+      [createReasoningModel(samplePayload.model, ["medium", "low", "high"])],
+      () =>
+        translateAnthropicMessagesToResponsesPayload({
+          ...samplePayload,
+          thinking: { type: "disabled" },
+        }),
+    )
+
+    expect(result.reasoning?.effort).toBe("low")
+  })
+
+  it("prefers minimal over low when clamping disabled thinking", () => {
+    const result = withModels(
+      [createReasoningModel(samplePayload.model, ["low", "minimal", "high"])],
+      () =>
+        translateAnthropicMessagesToResponsesPayload({
+          ...samplePayload,
+          thinking: { type: "disabled" },
+        }),
+    )
+
+    expect(result.reasoning?.effort).toBe("minimal")
+  })
+
+  it("lets a client requested effort win over disabled thinking", () => {
+    const result = withModels(
+      [createReasoningModel(samplePayload.model, ["none", "low", "high"])],
+      () =>
+        translateAnthropicMessagesToResponsesPayload({
+          ...samplePayload,
+          thinking: { type: "disabled" },
+          output_config: { effort: "xhigh" },
+        }),
+    )
+
+    expect(result.reasoning?.effort).toBe("xhigh")
+  })
+
+  it("clamps disabled thinking for hyphenated client model ids", () => {
+    const result = withModels(
+      [createReasoningModel("claude-sonnet-4.6", ["medium", "high"])],
+      () =>
+        translateAnthropicMessagesToResponsesPayload({
+          ...samplePayload,
+          model: "claude-sonnet-4-6",
+          thinking: { type: "disabled" },
+        }),
+    )
+
+    expect(result.reasoning?.effort).toBe("medium")
+  })
+
+  it("disables reasoning for models missing from the model list", () => {
+    const result = withModels([], () =>
+      translateAnthropicMessagesToResponsesPayload({
+        ...samplePayload,
+        thinking: { type: "disabled" },
+      }),
+    )
+
+    expect(result.reasoning?.effort).toBe("none")
+  })
+
+  it("keeps the model default when thinking is not disabled", () => {
+    const models = [createReasoningModel(samplePayload.model, ["none", "high"])]
+    const defaultEffort = getReasoningEffortForModel(samplePayload.model)
+
+    expect(
+      withModels(models, () =>
+        translateAnthropicMessagesToResponsesPayload(samplePayload),
+      ).reasoning?.effort,
+    ).toBe(defaultEffort)
+    expect(
+      withModels(models, () =>
+        translateAnthropicMessagesToResponsesPayload({
+          ...samplePayload,
+          thinking: { type: "enabled", budget_tokens: 1024 },
+        }),
+      ).reasoning?.effort,
+    ).toBe(defaultEffort)
   })
 
   it("converts anthropic text blocks into response input messages", () => {

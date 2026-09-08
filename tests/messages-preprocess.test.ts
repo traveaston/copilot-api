@@ -1334,6 +1334,76 @@ describe("prepareMessagesApiPayload", () => {
     })
   })
 
+  test("keeps thinking disabled when the client explicitly disables it", () => {
+    const payload: AnthropicMessagesPayload = {
+      model: "claude-opus-4.6",
+      max_tokens: 64,
+      messages: [{ role: "user", content: "hello" }],
+      thinking: {
+        type: "disabled",
+      },
+    }
+
+    prepareMessagesApiPayload(payload, {
+      capabilities: {
+        supports: {
+          adaptive_thinking: true,
+          reasoning_effort: ["low", "medium", "high"],
+        },
+      },
+    } as never)
+
+    expect(payload.thinking).toEqual({ type: "disabled" })
+    expect(payload.output_config).toBeUndefined()
+  })
+
+  test("does not stamp effort over client output_config when thinking is disabled", () => {
+    const payload: AnthropicMessagesPayload = {
+      model: "claude-opus-4.6",
+      max_tokens: 64,
+      messages: [{ role: "user", content: "hello" }],
+      thinking: {
+        type: "disabled",
+      },
+      output_config: {
+        effort: "low",
+      },
+    }
+
+    prepareMessagesApiPayload(payload, {
+      capabilities: {
+        supports: {
+          adaptive_thinking: true,
+          reasoning_effort: ["low", "medium", "high"],
+        },
+      },
+    } as never)
+
+    expect(payload.thinking).toEqual({ type: "disabled" })
+    expect(payload.output_config).toEqual({ effort: "low" })
+  })
+
+  test("keeps thinking disabled on models without adaptive thinking", () => {
+    const payload: AnthropicMessagesPayload = {
+      model: "claude-opus-4.6",
+      max_tokens: 64,
+      messages: [{ role: "user", content: "hello" }],
+      thinking: {
+        type: "disabled",
+      },
+    }
+
+    prepareMessagesApiPayload(payload, {
+      capabilities: {
+        supports: {
+          max_thinking_budget: 8192,
+        },
+      },
+    } as never)
+
+    expect(payload.thinking).toEqual({ type: "disabled" })
+  })
+
   test("does not enable adaptive thinking when tool choice forces tool use", () => {
     const payload: AnthropicMessagesPayload = {
       model: "gpt-5.4",
