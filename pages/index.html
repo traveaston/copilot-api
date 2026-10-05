@@ -49,6 +49,24 @@
         --color-fg-medium: #334155;
         --color-fg-light: #1e293b;
         --color-fg-lightest: #0f172a;
+
+        /* Role tokens (sessions view). */
+        --color-ink-strong: #0f172a;
+        --color-ink-label: #334155;
+        --color-ink-cell: #475569;
+        --color-ink-soft: #64748b;
+        --color-ink-faint: #94a3b8;
+        --color-line: #e2e8f0;
+        --color-sunken: #f8fafc;
+        --color-surface-solid: #ffffff;
+        --color-accent: #2563eb;
+        --color-danger: #dc2626;
+        --color-series-input: #1d4ed8;
+        --color-series-output: #22c55e;
+        --color-series-cache-read: #0ea5e9;
+        --color-series-cache-write: #f59e0b;
+        --color-series-cost: #f59e0b;
+        --color-series-request-events: #8b5cf6;
       }
 
       * {
@@ -518,6 +536,177 @@
           grid-template-columns: repeat(2, minmax(0, 1fr));
         }
       }
+
+      /* --- Sessions tab --- */
+
+      .sessions-tabs {
+        display: inline-flex;
+        gap: 4px;
+      }
+
+      .sessions-tab {
+        display: inline-flex;
+        align-items: baseline;
+        padding: 6px 12px;
+        border-bottom: 2px solid transparent;
+        color: var(--color-ink-soft);
+        font-size: 14px;
+        font-weight: 750;
+      }
+
+      .sessions-tab[aria-selected="true"] {
+        border-bottom-color: var(--color-accent);
+        color: var(--color-ink-strong);
+      }
+
+      .sessions-tab:focus-visible {
+        outline: 2px solid var(--color-accent);
+      }
+
+      .sessions-tab-count {
+        margin-left: 6px;
+        color: var(--color-ink-soft);
+        font-size: 12px;
+        font-weight: 600;
+      }
+
+      .sessions-meta {
+        padding: 0 12px;
+      }
+
+      .sessions-list {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        gap: 8px;
+        padding: 10px;
+        background: var(--color-sunken);
+      }
+
+      .sessions-list[data-loading="true"],
+      .sessions-empty[data-loading="true"] {
+        opacity: 0.6;
+      }
+
+      .session-card {
+        border: 1px solid var(--color-line);
+        border-radius: 10px;
+        background: var(--color-surface-solid);
+      }
+
+      .session-card-header {
+        display: grid;
+        grid-template-columns:
+          104px minmax(220px, 1.4fr) minmax(200px, 1fr) 70px 90px
+          18px;
+        gap: 18px;
+        align-items: center;
+        width: 100%;
+        padding: 12px 14px;
+        text-align: left;
+      }
+
+      .session-card-header:focus-visible {
+        outline: 2px solid var(--color-accent);
+        outline-offset: -2px;
+      }
+
+      .session-card-header > span,
+      .session-when > span,
+      .session-requests > span,
+      .session-cost > span {
+        display: block;
+      }
+
+      .session-clock {
+        color: var(--color-ink-strong);
+        font-size: 18px;
+        font-weight: 800;
+        line-height: 1.1;
+      }
+
+      .session-age {
+        color: var(--color-ink-label);
+        font-size: 12px;
+        font-weight: 600;
+      }
+
+      .session-day {
+        color: var(--color-ink-soft);
+        font-size: 11px;
+      }
+
+      .session-key {
+        color: var(--color-ink-faint);
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 10px;
+      }
+
+      .session-active {
+        color: var(--color-ink-soft);
+        font-size: 11px;
+      }
+
+      .session-tokens .session-figure,
+      .session-requests .session-figure,
+      .session-cost .session-figure {
+        font-size: 18px;
+        font-weight: 800;
+      }
+
+      .session-tokens .session-figure {
+        color: var(--color-ink-strong);
+      }
+
+      .session-tokens-word {
+        color: var(--color-ink-soft);
+        font-size: 12px;
+        font-weight: 600;
+      }
+
+      .session-requests .session-figure {
+        color: var(--color-series-request-events);
+      }
+
+      .session-cost {
+        text-align: right;
+      }
+
+      .session-cost .session-figure {
+        color: var(--color-series-cost);
+      }
+
+      .session-word {
+        color: var(--color-ink-soft);
+        font-size: 11px;
+      }
+
+      .session-chevron {
+        width: 14px;
+        color: var(--color-ink-soft);
+      }
+
+      .sessions-cost-dim {
+        opacity: 0.55;
+      }
+
+      @media (max-width: 920px) {
+        .session-card-header {
+          grid-template-columns: 1fr auto auto 14px;
+          gap: 10px 14px;
+        }
+
+        .session-activity,
+        .session-tokens {
+          order: 1;
+          grid-column: 1 / -1;
+        }
+      }
+
+      @media (max-width: 639px) {
+        .sessions-list {
+          padding: 6px;
+        }
+      }
     </style>
   </head>
   <body class="antialiased">
@@ -698,6 +887,7 @@
           tokenUsageTrendDay: null,
           tokenUsageTrendMetric: ALL_METRICS_VALUE,
           tokenUsageTrendModel: ALL_MODELS_VALUE,
+          sessions: null,
         };
 
         // --- Rendering Logic ---
@@ -1179,7 +1369,18 @@
             return;
           }
 
-          if (state.isLoading) {
+          const isShowingLoadedContent = Boolean(
+            state.error
+              || state.data
+              || state.tokenUsageDailySummary
+              || state.tokenUsageSummary
+              || state.tokenUsageEventsPage
+              || state.tokenUsageDailyError
+              || state.tokenUsageSummaryError
+              || state.tokenUsageEventsError
+          );
+
+          if (state.isLoading && !isShowingLoadedContent) {
             contentArea.innerHTML = renderSpinner();
             createIcons();
             return;
@@ -1647,6 +1848,25 @@
                 eventsPage.total
               )} events`
             : "No detail page loaded yet.";
+          const eventsPager = `${renderPaginationButton(
+            "previous",
+            "Previous",
+            !eventsPage || state.isEventsLoading || eventsPage.page <= 1
+          )}${renderPaginationButton(
+            "next",
+            "Next",
+            !eventsPage
+              || state.isEventsLoading
+              || eventsPage.page >= totalPages
+          )}`;
+          const eventsBody = `${
+            state.tokenUsageEventsError
+              ? `<div class="p-4">${renderError(
+                  state.tokenUsageEventsError,
+                  "Token usage details failed"
+                )}</div>`
+              : ""
+          }${renderTokenUsageEventsTable(eventsPage)}`;
 
           return `
             <section id="token-usage" class="dashboard-section">
@@ -1667,7 +1887,7 @@
                       : ""
                   }
                   ${
-                    state.isEventsLoading
+                    state.isEventsLoading || state.sessions?.loading
                       ? `<span class="rounded-md px-2 py-1" style="background-color: rgba(37, 99, 235, 0.08); color: var(--color-blue);">Refreshing details...</span>`
                       : ""
                   }
@@ -1786,6 +2006,14 @@
                   ${renderTokenUsageModelBreakdown(summary)}
                 </div>
 
+                ${
+                  state.sessions?.available
+                    ? renderSessionsRequestEventsPanel(
+                        eventsMeta,
+                        eventsPager,
+                        eventsBody
+                      )
+                    : `
                 <div class="panel">
                   <div class="panel-header flex-col items-start sm:flex-row sm:items-center">
                     <div>
@@ -1793,30 +2021,13 @@
                       <p class="panel-meta">${escapeHtml(eventsMeta)}</p>
                     </div>
                     <div class="flex items-center gap-2">
-                      ${renderPaginationButton(
-                        "previous",
-                        "Previous",
-                        !eventsPage || state.isEventsLoading || eventsPage.page <= 1
-                      )}
-                      ${renderPaginationButton(
-                        "next",
-                        "Next",
-                        !eventsPage
-                          || state.isEventsLoading
-                          || eventsPage.page >= totalPages
-                      )}
+                      ${eventsPager}
                     </div>
                   </div>
-                  ${
-                    state.tokenUsageEventsError
-                      ? `<div class="p-4">${renderError(
-                          state.tokenUsageEventsError,
-                          "Token usage details failed"
-                        )}</div>`
-                      : ""
-                  }
-                  ${renderTokenUsageEventsTable(eventsPage)}
+                  ${eventsBody}
                 </div>
+                `
+                }
               </div>
             </section>
           `;
@@ -2473,6 +2684,45 @@
         // --- Data Fetching ---
 
         /**
+         * Renders the Request Events panel with the Sessions and All events tabs.
+         * Reached only while the sessions module is loaded and the gateway has
+         * the sessions endpoint.
+         */
+        function renderSessionsRequestEventsPanel(eventsMeta, eventsPager, eventsBody) {
+          const sessions = state.sessions;
+          const isSessionsView = sessions.view === "sessions";
+          return `
+            <div class="panel">
+              <div class="panel-header sessions-panel-header flex-col items-start sm:flex-row sm:items-end">
+                <div class="min-w-0">
+                  ${usageViewerSessions.renderSessionsTabs(sessions, {
+                    eventsCount: state.tokenUsageSummary?.totals?.request_count ?? null,
+                  })}
+                  ${
+                    isSessionsView
+                      ? usageViewerSessions.renderSessionsMeta(sessions)
+                      : `<p class="panel-meta sessions-meta">${escapeHtml(eventsMeta)}</p>`
+                  }
+                </div>
+                <div class="flex items-center gap-2">
+                  ${
+                    isSessionsView
+                      ? usageViewerSessions.renderSessionsPager(sessions)
+                      : eventsPager
+                  }
+                </div>
+              </div>
+              ${usageViewerSessions.renderSessionsBody(sessions, {
+                eventsBody,
+                nowMs: Date.now(),
+                renderEmptyState,
+                renderError,
+              })}
+            </div>
+          `;
+        }
+
+        /**
          * Fetches usage data and token usage data from the specified API endpoint.
          */
         async function fetchData(page = 1) {
@@ -2494,21 +2744,33 @@
 
           const period = getSelectedPeriod();
           state.isLoading = true;
+          state.isEventsLoading = true;
           state.error = null;
           state.tokenUsageDailyError = null;
           state.tokenUsageSummaryError = null;
           state.tokenUsageEventsError = null;
+          const sessionsRequest = state.sessions?.page
+            ? startSessionsListLoad(state.sessions.page.page, "refresh")
+            : startSessionsListLoad(1, "initial");
           render();
 
           try {
             const usageUrl = resolveUsageUrl(endpoint);
-            const [usageResult, summaryResult, dailyResult, eventsResult] =
-              await Promise.allSettled([
-                fetchJson(usageUrl),
-                fetchJson(buildTokenUsageSummaryUrl(usageUrl, period)),
-                fetchJson(buildTokenUsageDailyUrl(usageUrl, period)),
-                fetchJson(buildTokenUsageEventsUrl(usageUrl, period, page)),
-              ]);
+            const [
+              usageResult,
+              summaryResult,
+              dailyResult,
+              eventsResult,
+              sessionsResult,
+            ] = await Promise.allSettled([
+              fetchJson(usageUrl),
+              fetchJson(buildTokenUsageSummaryUrl(usageUrl, period)),
+              fetchJson(buildTokenUsageDailyUrl(usageUrl, period)),
+              fetchJson(buildTokenUsageEventsUrl(usageUrl, period, page)),
+              ...(sessionsRequest
+                ? [fetchSessionsPage(usageUrl, period, sessionsRequest)]
+                : []),
+            ]);
 
             if (usageResult.status === "fulfilled") {
               state.data = usageResult.value;
@@ -2558,6 +2820,8 @@
                 eventsResult.reason
               );
             }
+
+            applySessionsResult(sessionsRequest, sessionsResult, usageUrl, period);
           } catch (error) {
             console.error("Fetch error:", error);
             state.data = null;
@@ -2568,8 +2832,10 @@
             state.tokenUsageDailyError = getErrorMessage(error);
             state.tokenUsageSummaryError = getErrorMessage(error);
             state.tokenUsageEventsError = getErrorMessage(error);
+            failSessionsRequest(sessionsRequest, error);
           } finally {
             state.isLoading = false;
+            state.isEventsLoading = false;
             render("usage");
           }
         }
@@ -2597,15 +2863,19 @@
           state.tokenUsageDailyError = null;
           state.tokenUsageSummaryError = null;
           state.tokenUsageEventsError = null;
+          const sessionsRequest = startSessionsListLoad(1, "period");
           render();
 
           try {
             const usageUrl = resolveUsageUrl(endpoint);
-            const [summaryResult, dailyResult, eventsResult] =
+            const [summaryResult, dailyResult, eventsResult, sessionsResult] =
               await Promise.allSettled([
                 fetchJson(buildTokenUsageSummaryUrl(usageUrl, period)),
                 fetchJson(buildTokenUsageDailyUrl(usageUrl, period)),
                 fetchJson(buildTokenUsageEventsUrl(usageUrl, period, page)),
+                ...(sessionsRequest
+                  ? [fetchSessionsPage(usageUrl, period, sessionsRequest)]
+                  : []),
               ]);
 
             if (summaryResult.status === "fulfilled") {
@@ -2649,6 +2919,8 @@
                 eventsResult.reason
               );
             }
+
+            applySessionsResult(sessionsRequest, sessionsResult, usageUrl, period);
           } catch (error) {
             console.error("Token usage fetch error:", error);
             state.tokenUsageDailySummary = null;
@@ -2657,6 +2929,7 @@
             state.tokenUsageDailyError = getErrorMessage(error);
             state.tokenUsageSummaryError = getErrorMessage(error);
             state.tokenUsageEventsError = getErrorMessage(error);
+            failSessionsRequest(sessionsRequest, error);
           } finally {
             state.isTokenUsageLoading = false;
             render("usage");
@@ -2693,6 +2966,175 @@
             state.isEventsLoading = false;
             render("usage");
           }
+        }
+
+        // --- Sessions tab glue (logic lives in usage-viewer/sessions.js) ---
+
+        /**
+         * Starts a sessions list load and returns its request, or null when the
+         * sessions module isn't loaded.
+         */
+        function startSessionsListLoad(page, reason) {
+          if (!usageViewerSessions || !state.sessions) {
+            return null;
+          }
+          const transition = usageViewerSessions.startSessionsLoad(
+            state.sessions,
+            { page, reason }
+          );
+          state.sessions = transition.state;
+          return transition.requests[0];
+        }
+
+        function fetchSessionsPage(usageUrl, period, request) {
+          return fetchJson(
+            usageViewerSessions.buildSessionsUrl(
+              deriveEndpointUrl(usageUrl, "token-usage"),
+              {
+                page: request.page,
+                pageSize: usageViewerSessions.SESSIONS_PAGE_SIZE,
+                period,
+              }
+            )
+          );
+        }
+
+        /**
+         * Feeds a settled sessions request to the module, then runs any
+         * follow-up request it issues (the lost-page re-fetch).
+         */
+        function applySessionsResult(request, result, usageUrl, period) {
+          if (!request || !result) {
+            return;
+          }
+          let transition;
+          if (result.status === "fulfilled") {
+            transition = usageViewerSessions.applySessionsPage(state.sessions, {
+              page: result.value,
+              requestId: request.requestId,
+            });
+          } else {
+            const missing = isMissingTokenUsageEndpointError(result.reason);
+            if (!missing) {
+              console.error("Sessions fetch error:", result.reason);
+            }
+            transition = usageViewerSessions.applySessionsError(state.sessions, {
+              message: getErrorMessage(result.reason),
+              missing,
+              requestId: request.requestId,
+            });
+          }
+          state.sessions = transition.state;
+          for (const followUp of transition.requests) {
+            void runSessionsRequest(followUp, usageUrl, period);
+          }
+        }
+
+        function failSessionsRequest(request, error) {
+          if (!request) {
+            return;
+          }
+          state.sessions = usageViewerSessions.applySessionsError(
+            state.sessions,
+            {
+              message: getErrorMessage(error),
+              missing: false,
+              requestId: request.requestId,
+            }
+          ).state;
+        }
+
+        async function runSessionsRequest(request, usageUrl, period) {
+          const [result] = await Promise.allSettled([
+            fetchSessionsPage(usageUrl, period, request),
+          ]);
+          applySessionsResult(request, result, usageUrl, period);
+          render("usage");
+        }
+
+        async function fetchSessionsPageMove(page) {
+          const endpoint = endpointUrlInput.value.trim();
+          const request = endpoint ? startSessionsListLoad(page, "page") : null;
+          if (!request) {
+            return;
+          }
+          render();
+          try {
+            await runSessionsRequest(
+              request,
+              resolveUsageUrl(endpoint),
+              getSelectedPeriod()
+            );
+          } catch (error) {
+            failSessionsRequest(request, error);
+            render("usage");
+          }
+        }
+
+        function selectSessionsView(view) {
+          if (
+            !usageViewerSessions
+            || !state.sessions
+            || (view !== "sessions" && view !== "events")
+          ) {
+            return;
+          }
+          state.sessions = usageViewerSessions.setView(state.sessions, view).state;
+          try {
+            window.history.replaceState(
+              window.history.state,
+              "",
+              usageViewerSessions.writeViewParam(window.location.href, view)
+            );
+          } catch (error) {
+            console.warn("Could not update URL:", getErrorMessage(error));
+          }
+          render();
+          contentArea
+            .querySelector(
+              `[data-session-action="tab"][data-session-view="${view}"]`
+            )
+            ?.focus();
+        }
+
+        function handleSessionAction(button) {
+          const action = button.dataset.sessionAction;
+          if (action === "tab") {
+            selectSessionsView(button.dataset.sessionView);
+            return;
+          }
+          const sessionsPage = state.sessions?.page;
+          if (!sessionsPage || state.sessions.loading) {
+            return;
+          }
+          if (action === "previous-page" && sessionsPage.page > 1) {
+            void fetchSessionsPageMove(sessionsPage.page - 1);
+          }
+          if (
+            action === "next-page"
+            && sessionsPage.page < sessionsPage.total_pages
+          ) {
+            void fetchSessionsPageMove(sessionsPage.page + 1);
+          }
+        }
+
+        function handleSessionsTabsKeydown(event) {
+          const keys = ["ArrowLeft", "ArrowRight", "Home", "End"];
+          if (
+            !keys.includes(event.key)
+            || !(event.target instanceof Element)
+            || !event.target.closest('[data-session-action="tab"]')
+            || !state.sessions
+          ) {
+            return;
+          }
+          event.preventDefault();
+          const views = ["sessions", "events"];
+          const index = views.indexOf(state.sessions.view);
+          const nextIndex = event.key === "Home" ? 0
+            : event.key === "End" ? 1
+            : 1 - index;
+          selectSessionsView(views[nextIndex]);
         }
 
         // --- Event Handlers & Initialization ---
@@ -2753,6 +3195,12 @@
               state.tokenUsageTrendDay = day;
               render();
             }
+            return;
+          }
+
+          const sessionButton = event.target.closest("[data-session-action]");
+          if (sessionButton) {
+            handleSessionAction(sessionButton);
             return;
           }
 
@@ -2833,6 +3281,7 @@
           contentArea.addEventListener("click", handleContentAreaClick);
           contentArea.addEventListener("change", handleContentAreaChange);
           contentArea.addEventListener("input", handleModelsSearch);
+          contentArea.addEventListener("keydown", handleSessionsTabsKeydown);
 
           const urlParams = new URLSearchParams(window.location.search);
           const periodFromUrl = normalizePeriod(urlParams.get("period"));
@@ -2840,6 +3289,11 @@
           const initialEndpoint = endpointFromUrl || DEFAULT_ENDPOINT;
 
           state.tokenUsagePeriod = periodFromUrl;
+          if (usageViewerSessions) {
+            state.sessions = usageViewerSessions.createSessionsState(
+              usageViewerSessions.readViewParam(window.location.search)
+            );
+          }
           tokenUsagePeriodSelect.value = periodFromUrl;
           endpointUrlInput.value = initialEndpoint;
           migrateLegacyApiKey(initialEndpoint);
