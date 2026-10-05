@@ -3424,6 +3424,9 @@
 
         async function fetchSessionsPageMove(page) {
           const endpoint = endpointUrlInput.value.trim();
+          // Page within the list on screen: after a failed period change the
+          // select already holds the new period.
+          const period = state.sessions?.page?.period ?? getSelectedPeriod();
           const request = endpoint ? startSessionsListLoad(page, "page") : null;
           if (!request) {
             return;
@@ -3433,7 +3436,7 @@
             await runSessionsRequest(
               request,
               resolveUsageUrl(endpoint),
-              getSelectedPeriod()
+              period
             );
           } catch (error) {
             failSessionsRequest(request, error);
