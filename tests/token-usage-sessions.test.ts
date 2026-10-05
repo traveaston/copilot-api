@@ -592,6 +592,31 @@ describe("session events", () => {
     expect(unfiltered).toMatchObject({ model: null, total: 4 })
     expect(unfiltered.items[0].prev_ms).toBe(ago(15))
   })
+
+  test("filtering on the breakdown's unknown model returns the events with no model", async () => {
+    seed(
+      persistedEvent({ created_at_ms: ago(30), model: "", session_id: "s" }),
+      persistedEvent({ created_at_ms: ago(20), model: "a", session_id: "s" }),
+      persistedEvent({ created_at_ms: ago(10), model: "", session_id: "s" }),
+    )
+
+    const [session] = (await fetchSessions()).items
+    expect(session.byModel.map((entry) => entry.model)).toEqual([
+      "unknown",
+      "a",
+    ])
+
+    const filtered = await fetchSessionEvents(
+      "period=today&session_id=s&model=unknown",
+    )
+    expect(
+      filtered.items.map((e) => [e.created_at_ms, e.model, e.prev_ms]),
+    ).toEqual([
+      [ago(10), "unknown", ago(30)],
+      [ago(30), "unknown", null],
+    ])
+    expect(filtered).toMatchObject({ model: "unknown", total: 2 })
+  })
 })
 
 describe("session events validation", () => {

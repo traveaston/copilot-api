@@ -1156,6 +1156,12 @@ export async function getTokenUsageEventsPage(input: {
 const SESSION_KEY_SQL =
   "CASE WHEN session_id = '' THEN trace_id ELSE session_id END"
 
+/**
+ * The model as the breakdown and event rows label it: an empty model reads
+ * "unknown", so filtering on that label must also match the empty-model rows.
+ */
+const MODEL_LABEL_SQL = "CASE WHEN model = '' THEN 'unknown' ELSE model END"
+
 const TOTALS_SELECT_SQL = `
       COUNT(*) AS request_count,
       COALESCE(SUM(input_tokens), 0) AS input_tokens,
@@ -1371,7 +1377,7 @@ export async function getTokenUsageSessionEventsPage(
     "session_id" in input.key ?
       { params: [input.key.session_id], sql: "session_id = ?" }
     : { params: [input.key.trace_id], sql: "session_id = '' AND trace_id = ?" }
-  const modelSql = input.model === null ? "" : " AND model = ?"
+  const modelSql = input.model === null ? "" : ` AND ${MODEL_LABEL_SQL} = ?`
   const where = `created_at_ms >= ? AND created_at_ms < ? AND ${keyFilter.sql}${modelSql}`
   const params = [
     range.startMs,
