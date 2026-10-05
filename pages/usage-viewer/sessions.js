@@ -384,11 +384,11 @@ export function startSessionsLoad(state, { page, reason }) {
 }
 
 /**
- * Applies a sessions page response. Drops a stale response, and re-fetches a
- * page past the end once per load.
+ * Applies a sessions page response. Drops a stale response, re-fetches a page
+ * past the end once per load, then settles the open sessions on the new page.
  * @param {SessionsState} state
  * @param {{ requestId: number, page: TokenUsageSessionsPage }} response
- * @returns {SessionsTransition}
+ * @returns {SessionsPageTransition}
  */
 export function applySessionsPage(state, { requestId, page }) {
   if (requestId !== state.requestId) return { requests: [], state }
@@ -404,18 +404,11 @@ export function applySessionsPage(state, { requestId, page }) {
       state.reason,
     )
   }
-  return {
-    requests: [],
-    state: {
-      ...state,
-      available: true,
-      // A page move is a deliberate move away, so it collapses everything.
-      expanded: state.reason === "page" ? {} : state.expanded,
-      loading: false,
-      page,
-      reason: null,
-    },
-  }
+  return settleExpansions(
+    { ...state, available: true, loading: false, page, reason: null },
+    page,
+    state.reason,
+  )
 }
 
 /**
@@ -1177,7 +1170,7 @@ export function renderEventRows(
       : "session-mono session-gap"
     const trace = escapeHtml(event.trace_id)
     return `${divider}<tr class="session-event-row">
-<td><span class="session-dot" aria-hidden="true" style="background:${creatorColor(event.model)}"></span>${escapeHtml(event.model)}</td>
+<td><span class="session-event-model"><span class="session-dot" aria-hidden="true" style="background:${creatorColor(event.model)}"></span>${escapeHtml(event.model)}</span></td>
 <td class="session-mono" title="${escapeHtml(new Date(event.created_at_ms).toLocaleString())}">${escapeHtml(formatClock(event.created_at_ms, { seconds: true }))}</td>
 <td class="${gapClass}">${escapeHtml(formatGap(gapMs))}</td>
 <td class="session-num">${formatInteger(event.input_tokens)}</td>
@@ -1216,7 +1209,7 @@ export function renderSessionExpansion(session, entry, { nowMs }) {
     : ""
   const table =
     breakdown || rows ?
-      `<div class="session-events-wrap"><table class="session-events-table">${breakdown}${rows}</table></div>`
+      `<div class="session-events-wrap"${entry.stale ? ' data-stale="true"' : ""}><table class="session-events-table">${breakdown}${rows}</table></div>`
     : ""
   return `<div class="session-head">${label} <code class="session-full-key">${escapeHtml(session.key)}</code> <button type="button" class="session-link-button" title="Copy session key" data-session-action="copy-key" data-session-key="${escapeHtml(session.key)}" data-session-sessionless="${session.sessionless}">Copy</button> <span class="session-head-endpoints">${escapeHtml(session.endpoints.join(", "))}${multiModel ? " · click a model to filter" : ""}</span></div>${table}${renderEventsFooter(entry)}`
 }
@@ -1394,4 +1387,61 @@ export function chooseFocusIndex(target, candidateDatasets) {
       && candidate.sessionKey === target.sessionKey
       && candidate.sessionSessionless === target.sessionSessionless,
   )
+}
+
+// --- State survival across Refresh and period change (spec §5.10, §5.5) ---
+
+/**
+ * @typedef {{ state: SessionsState, requests: Array<SessionsRequest | SessionEventsRequest> }} SessionsPageTransition
+ */
+
+/**
+ * Settles the open sessions once a list page lands. A page move collapses
+ * every session. A full load keeps each open session whose identity is on the
+ * new page (a survivor) and reloads its newest events with one request, its old
+ * rows shown as stale meanwhile; the others collapse.
+ * @param {SessionsState} state The state with the landed page applied.
+ * @param {TokenUsageSessionsPage} page The landed page.
+ * @param {SessionsLoadReason | null} reason Why the landed load started.
+ * @returns {SessionsPageTransition}
+ */
+function settleExpansions(state, page, reason) {
+  // A page move is a deliberate move away, so it collapses everything.
+  if (reason === "page") {
+    return { requests: [], state: { ...state, expanded: {} } }
+  }
+  /** @type {SessionsState} */
+  let next = { ...state, expanded: {} }
+  /** @type {SessionEventsRequest[]} */
+  const requests = []
+  for (const session of page.items) {
+    const entry = state.expanded[identityOf(session)]
+    if (!entry) continue
+    const reload = requestSessionEvents(
+      next,
+      {
+        ...entry,
+        filter: stillValidFilter(session, entry.filter),
+        stale: true,
+      },
+      { before: null, mode: "replace" },
+    )
+    next = reload.state
+    requests.push(...reload.requests)
+  }
+  return { requests, state: next }
+}
+
+/**
+ * A survivor's filter after a reload: kept only while the reloaded card still
+ * lists the model and still has more than one model, otherwise cleared.
+ * @param {TokenUsageSession} session The reloaded card.
+ * @param {string | null} filter
+ * @returns {string | null}
+ */
+function stillValidFilter(session, filter) {
+  const valid =
+    session.byModel.length > 1
+    && session.byModel.some((entry) => entry.model === filter)
+  return valid ? filter : null
 }

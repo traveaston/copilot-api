@@ -938,6 +938,14 @@
         opacity: 0.45;
       }
 
+      /* A survivor's old rows while its newest events reload. Dims cell
+         content only, so the sticky first cell's background stays opaque. */
+      .session-events-wrap[data-stale="true"] .session-event-row > td:not(:first-child),
+      .session-events-wrap[data-stale="true"] .session-event-model,
+      .session-events-wrap[data-stale="true"] .session-day-label {
+        opacity: 0.6;
+      }
+
       .session-breakdown-button {
         color: inherit;
         cursor: pointer;
@@ -3358,7 +3366,8 @@
 
         /**
          * Feeds a settled sessions request to the module, then runs any
-         * follow-up request it issues (the lost-page re-fetch).
+         * follow-up requests it issues: the lost-page re-fetch, or one
+         * survivor reload per session kept open on the landed page.
          */
         function applySessionsResult(request, result, usageUrl, period) {
           if (!request || !result) {
@@ -3383,7 +3392,11 @@
           }
           state.sessions = transition.state;
           for (const followUp of transition.requests) {
-            void runSessionsRequest(followUp, usageUrl, period);
+            if (followUp.kind === "session-events") {
+              void runSessionEventsRequest(followUp, usageUrl, period);
+            } else {
+              void runSessionsRequest(followUp, usageUrl, period);
+            }
           }
         }
 
