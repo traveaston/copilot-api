@@ -579,6 +579,12 @@ describe("usage viewer sessions module bridge", () => {
     ).toBe(2)
   })
 
+  test("builds the sessions request URL through the module", async () => {
+    const html = await readUsageViewerPage()
+
+    expect(html).toContain("usageViewerSessions.buildSessionsUrl(")
+  })
+
   test("module symbols match the inline formatCurrencyAmount map", async () => {
     const html = await readUsageViewerPage()
     const body = extractInlineFunctionRange(
