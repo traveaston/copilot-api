@@ -17,8 +17,11 @@ import {
 
 export {
   closeUsageStore,
+  createEmptyEventsPage,
+  createEmptySessionsPage,
   getTokenUsageDailySummary,
   getTokenUsageEventsPage,
+  getTokenUsageSessionsPage,
   getTokenUsageSummary,
   normalizeOptionalToken,
   normalizeToken,
@@ -34,6 +37,9 @@ export type {
   TokenUsageEventsPage,
   TokenUsageModelSummary,
   TokenUsagePeriod,
+  TokenUsageSession,
+  TokenUsageSessionModelSummary,
+  TokenUsageSessionsPage,
   TokenUsageSource,
   TokenUsageSummary,
   TokenUsageTotals,
