@@ -730,13 +730,13 @@ function renderTokenMarks(session) {
     },
     {
       color: "var(--color-series-cache-read)",
-      label: "Cache read",
+      label: "Cache Read",
       short: "Cache R",
       value: session.cache_read_input_tokens,
     },
     {
       color: "var(--color-series-cache-write)",
-      label: "Cache write",
+      label: "Cache Write",
       short: "Cache W",
       value: session.cache_creation_input_tokens,
     },
@@ -1316,12 +1316,12 @@ export function renderBreakdownRows(session, entry, { nowMs }) {
       part("Input", model.input_tokens, "var(--color-series-input)"),
       part("Output", model.output_tokens, "var(--color-series-output)"),
       part(
-        "Cache read",
+        "Cache Read",
         model.cache_read_input_tokens,
         "var(--color-series-cache-read)",
       ),
       part(
-        "Cache write",
+        "Cache Write",
         model.cache_creation_input_tokens,
         "var(--color-series-cache-write)",
       ),

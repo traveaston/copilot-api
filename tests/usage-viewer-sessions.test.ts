@@ -1112,7 +1112,7 @@ describe("renderSessionCard marks", () => {
       [...(bar?.querySelectorAll("[data-bar-segment]") ?? [])].map((s) =>
         s.getAttribute("title"),
       ),
-    ).toEqual(["Input 120", "Output 20", "Cache read 340", "Cache write 120"])
+    ).toEqual(["Input 120", "Output 20", "Cache Read 340", "Cache Write 120"])
     expect(bar?.innerHTML).toContain("var(--color-series-cache-write)")
   })
 
@@ -2340,6 +2340,11 @@ describe("renderBreakdownRows", () => {
     expect(widths[0]).toContain("width:25%")
     expect(widths[2]).toContain("width:50%")
     expect(widths[3]).toContain("width:0%")
+    expect(
+      [...row.querySelectorAll("[data-bar-segment]")].map((s) =>
+        s.getAttribute("title"),
+      ),
+    ).toEqual(["Input 300", "Output 80", "Cache Read 600", "Cache Write 0"])
     expect(row.querySelector(".session-bar")?.className).toContain(
       "session-share-bar",
     )
