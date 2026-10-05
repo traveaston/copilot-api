@@ -1120,13 +1120,17 @@ export function renderEventsFooter(entry) {
  * The events `<tbody>`: the single-model sub-header, then one row per event,
  * with day dividers in a multi-day session.
  * @param {ReadonlyArray<TokenUsageSessionEventRecord & { prev_ms?: number | null }>} items
- * @param {{ multiDay: boolean, multiModel?: boolean, nowMs: number }} options `multiModel` swaps the sub-header to "Events" with blank number columns, since the breakdown above carries the labels.
+ * @param {{ multiDay: boolean, multiModel?: boolean, nowMs: number, sessionKey?: string, sessionless?: boolean }} options `sessionKey` and `sessionless` stamp each trace button with its session, for focus restoration. `multiModel` swaps the sub-header to "Events" with blank number columns, since the breakdown above carries the labels.
  * @returns {string}
  */
 export function renderEventRows(
   items,
-  { multiDay, multiModel = false, nowMs },
+  { multiDay, multiModel = false, nowMs, sessionKey, sessionless },
 ) {
+  const owner =
+    sessionKey === undefined ? "" : (
+      ` data-session-key="${escapeHtml(sessionKey)}" data-session-sessionless="${sessionless === true}"`
+    )
   const heads =
     multiModel ?
       ["Events", "Time", "Gap", "", "", "", "", "", "", "Trace"]
@@ -1175,7 +1179,7 @@ export function renderEventRows(
 <td class="session-num">${formatInteger(event.cache_creation_input_tokens)}</td>
 <td class="session-num session-total">${formatInteger(event.total_tokens)}</td>
 <td class="session-num session-event-cost">${formatCostList(event.cost ? [event.cost] : null)}</td>
-<td><button type="button" class="session-trace" title="Copy trace id" data-session-action="copy-trace" data-trace-id="${trace}">${trace}</button></td>
+<td><button type="button" class="session-trace" title="Copy trace id" data-session-action="copy-trace"${owner} data-trace-id="${trace}">${trace}</button></td>
 </tr>`
   })
   return `<tbody class="session-events-body"><tr class="session-events-subheader">${header}</tr>${rows.join("")}</tbody>`
@@ -1195,7 +1199,13 @@ export function renderSessionExpansion(session, entry, { nowMs }) {
   const breakdown = renderBreakdownRows(session, entry, { nowMs })
   const rows =
     entry.items.length > 0 ?
-      renderEventRows(entry.items, { multiDay, multiModel, nowMs })
+      renderEventRows(entry.items, {
+        multiDay,
+        multiModel,
+        nowMs,
+        sessionKey: session.key,
+        sessionless: session.sessionless,
+      })
     : ""
   const table =
     breakdown || rows ?
@@ -1301,8 +1311,8 @@ export function renderBreakdownRows(session, entry, { nowMs }) {
         "var(--color-series-cache-write)",
       ),
     ])
-    return `<tr class="${classes}" ${filterTarget(entry)} data-model="${name}">
-<td><button type="button" class="session-breakdown-button" aria-pressed="${pressed}" ${filterTarget(entry)} data-model="${name}"><span class="session-dot" aria-hidden="true" style="background:${creatorColor(model.model)}"></span>${name}<b>${formatInteger(model.request_count)}</b></button></td>
+    return `<tr class="${classes}" ${filterTarget(entry)} data-session-model="${name}">
+<td><button type="button" class="session-breakdown-button" aria-pressed="${pressed}" ${filterTarget(entry)} data-session-model="${name}"><span class="session-dot" aria-hidden="true" style="background:${creatorColor(model.model)}"></span>${name}<b>${formatInteger(model.request_count)}</b></button></td>
 <td class="session-breakdown-active session-mono" colspan="2">${escapeHtml(formatActiveRange(model.first_ms, model.last_ms, nowMs))}</td>
 <td class="session-num">${formatInteger(model.input_tokens)}</td>
 <td class="session-num">${formatInteger(model.output_tokens)}</td>
@@ -1324,7 +1334,59 @@ export function renderBreakdownRows(session, entry, { nowMs }) {
  */
 function renderFilterChip(entry) {
   if (entry.filter === null) return ""
-  return ` · only ${escapeHtml(entry.filter)} <button type="button" class="session-link-button" ${filterTarget(entry)}>clear</button>`
+  return ` · only ${escapeHtml(entry.filter)} <button type="button" class="session-link-button" ${filterTarget(entry).replace('"filter"', '"clear-filter"')}>clear</button>`
+}
+
+// --- Focus restoration (spec §5.12) ---
+
+const FOCUS_FIELDS = [
+  "sessionAction",
+  "sessionKey",
+  "sessionSessionless",
+  "sessionModel",
+  "sessionView",
+  "traceId",
+]
+
+/**
+ * The attributes that identify a session control across renders, or null for an
+ * element that is not one. `traceId` is included so one session's trace buttons
+ * stay distinct.
+ * @param {Record<string, string | undefined>} dataset a control's `dataset`
+ * @returns {Record<string, string> | null}
+ */
+export function focusTargetOf(dataset) {
+  if (dataset.sessionAction === undefined) return null
+  /** @type {Record<string, string>} */
+  const target = {}
+  for (const field of FOCUS_FIELDS) {
+    const value = dataset[field]
+    if (value !== undefined) target[field] = value
+  }
+  return target
+}
+
+/**
+ * Picks the control to focus after a render: the one whose attributes all match
+ * the target, else the target session's card header, else -1 (leave focus alone).
+ * The candidates must be focusable controls only. A match may be disabled; the
+ * caller then keeps the target and retries on the next render.
+ * @param {Record<string, string> | null} target
+ * @param {ReadonlyArray<Record<string, string | undefined>>} candidateDatasets
+ * @returns {number}
+ */
+export function chooseFocusIndex(target, candidateDatasets) {
+  if (target === null) return -1
+  const exact = candidateDatasets.findIndex((candidate) =>
+    FOCUS_FIELDS.every((field) => candidate[field] === target[field]),
+  )
+  if (exact !== -1 || target.sessionKey === undefined) return exact
+  return candidateDatasets.findIndex(
+    (candidate) =>
+      candidate.sessionAction === "toggle"
+      && candidate.sessionKey === target.sessionKey
+      && candidate.sessionSessionless === target.sessionSessionless,
+  )
 }
 
 // --- State survival across Refresh and period change (spec §5.10, §5.5) ---

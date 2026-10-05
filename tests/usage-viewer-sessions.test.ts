@@ -42,6 +42,8 @@ import {
   pluralize,
   readViewParam,
   renderEventRows,
+  chooseFocusIndex,
+  focusTargetOf,
   renderEventsFooter,
   renderSessionCard,
   renderSessionExpansion,
@@ -2293,7 +2295,7 @@ describe("renderBreakdownRows", () => {
     expect(button?.getAttribute("type")).toBe("button")
     expect(button?.getAttribute("aria-pressed")).toBe("false")
     expect(button?.getAttribute("data-session-action")).toBe("filter")
-    expect(button?.getAttribute("data-model")).toBe(MODEL_A)
+    expect(button?.getAttribute("data-session-model")).toBe(MODEL_A)
     expect(button?.getAttribute("data-session-key")).toBe(MULTI.key)
     expect(button?.getAttribute("data-session-sessionless")).toBe("false")
 
@@ -2309,7 +2311,7 @@ describe("renderBreakdownRows", () => {
     const [first, second] = [...root.querySelectorAll("tbody tr")]
 
     expect(first.getAttribute("data-session-action")).toBe("filter")
-    expect(first.getAttribute("data-model")).toBe(MODEL_A)
+    expect(first.getAttribute("data-session-model")).toBe(MODEL_A)
     expect(first.classList.contains("session-breakdown-dim")).toBe(true)
     expect(first.classList.contains("session-breakdown-pressed")).toBe(false)
     expect(second.classList.contains("session-breakdown-pressed")).toBe(true)
@@ -2484,12 +2486,14 @@ describe("filter chip in the events footer", () => {
   for (const [name, overrides, text] of states) {
     test(`${name}: appends only ‹model› and a clear button`, () => {
       const root = footer(overrides)
-      const clear = root.querySelector("button[data-session-action=filter]")
+      const clear = root.querySelector(
+        "button[data-session-action=clear-filter]",
+      )
 
       expect(root.textContent).toContain(text)
       expect(root.textContent).toContain(` · only ${MODEL_A} clear`)
       expect(clear?.textContent).toBe("clear")
-      expect(clear?.getAttribute("data-model")).toBeNull()
+      expect(clear?.getAttribute("data-session-model")).toBeNull()
       expect(clear?.getAttribute("data-session-key")).toBe(MULTI.key)
       expect(clear?.getAttribute("data-session-sessionless")).toBe("false")
     })
@@ -3089,5 +3093,128 @@ describe("state survival: the other §5.10 rows", () => {
     expect([away.requests, back.requests]).toEqual([[], []])
     expect(back.state.page).toBe(before.page)
     expect(back.state.expanded).toBe(before.expanded)
+  })
+})
+
+describe("trace buttons carry the session key (focus restoration)", () => {
+  test("renderEventRows passes the key and sessionless flag to each trace button", () => {
+    const root = parse(
+      `<table>${renderEventRows([eventOf()], { multiDay: false, nowMs: NOW, sessionKey: "k1", sessionless: true })}</table>`,
+    )
+    const button = root.querySelector('[data-session-action="copy-trace"]')
+    expect(button?.getAttribute("data-session-key")).toBe("k1")
+    expect(button?.getAttribute("data-session-sessionless")).toBe("true")
+    expect(button?.getAttribute("data-trace-id")).toBe("trace-1")
+  })
+
+  test("the expansion's trace buttons carry its session's key", () => {
+    const state = multiEntry()
+    const root = parse(
+      renderSessionExpansion(MULTI, state.expanded[MULTI_ID], { nowMs: NOW }),
+    )
+    const buttons = [
+      ...root.querySelectorAll('[data-session-action="copy-trace"]'),
+    ]
+    expect(buttons.length).toBeGreaterThan(0)
+    for (const button of buttons) {
+      expect(button.getAttribute("data-session-key")).toBe(MULTI.key)
+      expect(button.getAttribute("data-session-sessionless")).toBe("false")
+    }
+  })
+
+  test("a breakdown row's filter button is the only filter control with a button role", () => {
+    const state = multiEntry()
+    const root = parse(
+      `<table>${renderBreakdownRows(MULTI, state.expanded[MULTI_ID], { nowMs: NOW })}</table>`,
+    )
+    expect(
+      root.querySelectorAll("button[data-session-action=filter]").length,
+    ).toBe(MULTI.byModel.length)
+  })
+})
+
+describe("focus restoration", () => {
+  const header = {
+    sessionAction: "toggle",
+    sessionKey: "k1",
+    sessionSessionless: "false",
+  }
+
+  test("focusTargetOf keeps only the session attributes", () => {
+    expect(
+      focusTargetOf({
+        sessionAction: "filter",
+        sessionKey: "k1",
+        sessionSessionless: "false",
+        sessionModel: "gpt-5",
+        unrelated: "x",
+      }),
+    ).toEqual({
+      sessionAction: "filter",
+      sessionKey: "k1",
+      sessionSessionless: "false",
+      sessionModel: "gpt-5",
+    })
+  })
+
+  test("focusTargetOf returns null for a control that is not a session control", () => {
+    expect(focusTargetOf({})).toBeNull()
+    expect(focusTargetOf({ modelCopy: "x" })).toBeNull()
+  })
+
+  test("an exact match wins, even over the card header", () => {
+    const target = focusTargetOf({ ...header, sessionAction: "more" })
+    const candidates = [
+      header,
+      { sessionAction: "more", sessionKey: "k2", sessionSessionless: "false" },
+      { sessionAction: "more", sessionKey: "k1", sessionSessionless: "false" },
+    ]
+    expect(chooseFocusIndex(target, candidates)).toBe(2)
+  })
+
+  test("trace buttons of one session are told apart by trace id", () => {
+    const trace = (id: string) => ({
+      sessionAction: "copy-trace",
+      sessionKey: "k1",
+      sessionSessionless: "false",
+      traceId: id,
+    })
+    expect(
+      chooseFocusIndex(focusTargetOf(trace("b")), [trace("a"), trace("b")]),
+    ).toBe(1)
+  })
+
+  test("falls back to the target session's card header when the control is gone", () => {
+    const target = focusTargetOf({ ...header, sessionAction: "retry" })
+    const candidates = [
+      {
+        sessionAction: "toggle",
+        sessionKey: "k2",
+        sessionSessionless: "false",
+      },
+      header,
+    ]
+    expect(chooseFocusIndex(target, candidates)).toBe(1)
+  })
+
+  test("the fallback matches the sessionless flag too", () => {
+    const target = focusTargetOf({ ...header, sessionSessionless: "true" })
+    expect(chooseFocusIndex(target, [header])).toBe(-1)
+  })
+
+  test("a keyless control that is gone leaves focus alone", () => {
+    const target = focusTargetOf({ sessionAction: "next-page" })
+    expect(chooseFocusIndex(target, [header])).toBe(-1)
+  })
+
+  test("no target leaves focus alone", () => {
+    expect(chooseFocusIndex(null, [header])).toBe(-1)
+  })
+
+  test("a disabled target is still matched, so the glue can keep and retry it", () => {
+    const target = focusTargetOf({ sessionAction: "next-page" })
+    expect(
+      chooseFocusIndex(target, [header, { sessionAction: "next-page" }]),
+    ).toBe(1)
   })
 })

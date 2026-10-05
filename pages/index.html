@@ -1684,11 +1684,46 @@
         /**
          * Renders the entire UI based on the current state.
          */
+        // Sessions focus restoration (spec 5.12): every render replaces the
+        // panel's HTML, so remember the focused session control and refocus it.
+        let sessionFocusTarget = null;
+
+        function recordSessionFocus() {
+          const active = document.activeElement;
+          if (!active || active === document.body || active.disabled) {
+            return; // keep the previous target
+          }
+          sessionFocusTarget = contentArea.contains(active)
+            ? usageViewerSessions.focusTargetOf(active.dataset)
+            : null;
+        }
+
+        function restoreSessionFocus() {
+          // Candidates are buttons only: a clickable breakdown <tr> shares its
+          // button's attributes and must never be chosen.
+          const controls = [
+            ...contentArea.querySelectorAll("button[data-session-action]"),
+          ];
+          const index = usageViewerSessions.chooseFocusIndex(
+            sessionFocusTarget,
+            controls.map((control) => control.dataset)
+          );
+          const control = controls[index];
+          // A disabled match (the pager during a load) keeps the target and is
+          // retried on the next render; focus() on it would silently do nothing.
+          if (control && !control.disabled) {
+            control.focus();
+          }
+        }
+
         function render(view = state.activeTab) {
           if (view !== state.activeTab) {
             return;
           }
           updateControls();
+          if (usageViewerSessions && state.activeTab !== "models") {
+            recordSessionFocus();
+          }
 
           if (state.activeTab === "models") {
             contentArea.innerHTML = renderModelsSection();
@@ -1745,6 +1780,9 @@
 
           // Replace placeholder icons with actual Lucide icons
           createIcons();
+          if (usageViewerSessions) {
+            restoreSessionFocus();
+          }
         }
 
         function getModelField(model, fields) {
@@ -3506,7 +3544,15 @@
               usageViewerSessions.toggleModelFilter(
                 state.sessions,
                 identity,
-                button.dataset.model ?? null
+                button.dataset.sessionModel ?? null
+              )
+            );
+          } else if (action === "clear-filter") {
+            runSessionEventsTransition(
+              usageViewerSessions.toggleModelFilter(
+                state.sessions,
+                identity,
+                null
               )
             );
           }
@@ -3565,7 +3611,7 @@
             selectSessionsView(button.dataset.sessionView);
             return;
           }
-          if (state.sessions && ["toggle", "more", "retry", "filter"].includes(action)) {
+          if (state.sessions && ["toggle", "more", "retry", "filter", "clear-filter"].includes(action)) {
             handleSessionExpansionAction(action, button);
             return;
           }
