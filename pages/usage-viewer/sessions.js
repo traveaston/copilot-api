@@ -1120,29 +1120,35 @@ export function renderEventsFooter(entry) {
       : ""
     content = `${more}Showing ${formatInteger(entry.items.length)} of ${pluralize(entry.total, "event")}`
   }
-  return `<div class="session-events-footer">${content}</div>`
+  return `<div class="session-events-footer">${content}${renderFilterChip(entry)}</div>`
 }
 
 /**
  * The events `<tbody>`: the single-model sub-header, then one row per event,
  * with day dividers in a multi-day session.
  * @param {ReadonlyArray<TokenUsageSessionEventRecord & { prev_ms?: number | null }>} items
- * @param {{ multiDay: boolean, nowMs: number }} options
+ * @param {{ multiDay: boolean, multiModel?: boolean, nowMs: number }} options `multiModel` swaps the sub-header to "Events" with blank number columns, since the breakdown above carries the labels.
  * @returns {string}
  */
-export function renderEventRows(items, { multiDay, nowMs }) {
-  const heads = [
-    "Model",
-    "Time",
-    "Gap",
-    "Input",
-    "Output",
-    "Cache Read",
-    "Cache Write",
-    "Total",
-    "Cost",
-    "Trace",
-  ]
+export function renderEventRows(
+  items,
+  { multiDay, multiModel = false, nowMs },
+) {
+  const heads =
+    multiModel ?
+      ["Events", "Time", "Gap", "", "", "", "", "", "", "Trace"]
+    : [
+        "Model",
+        "Time",
+        "Gap",
+        "Input",
+        "Output",
+        "Cache Read",
+        "Cache Write",
+        "Total",
+        "Cost",
+        "Trace",
+      ]
   const numeric = new Set([3, 4, 5, 6, 7, 8])
   const header = heads
     .map(
@@ -1192,9 +1198,138 @@ export function renderEventRows(items, { multiDay, nowMs }) {
 export function renderSessionExpansion(session, entry, { nowMs }) {
   const label = session.sessionless ? "No session id · trace" : "Session"
   const multiDay = !isSameDay(session.first_ms, session.last_ms)
-  const table =
+  const multiModel = session.byModel.length > 1
+  const breakdown = renderBreakdownRows(session, entry, { nowMs })
+  const rows =
     entry.items.length > 0 ?
-      `<div class="session-events-wrap"><table class="session-events-table">${renderEventRows(entry.items, { multiDay, nowMs })}</table></div>`
+      renderEventRows(entry.items, { multiDay, multiModel, nowMs })
     : ""
-  return `<div class="session-head">${label} <code class="session-full-key">${escapeHtml(session.key)}</code> <button type="button" class="session-link-button" title="Copy session key" data-session-action="copy-key" data-session-key="${escapeHtml(session.key)}" data-session-sessionless="${session.sessionless}">Copy</button> <span class="session-head-endpoints">${escapeHtml(session.endpoints.join(", "))}</span></div>${table}${renderEventsFooter(entry)}`
+  const table =
+    breakdown || rows ?
+      `<div class="session-events-wrap"><table class="session-events-table">${breakdown}${rows}</table></div>`
+    : ""
+  return `<div class="session-head">${label} <code class="session-full-key">${escapeHtml(session.key)}</code> <button type="button" class="session-link-button" title="Copy session key" data-session-action="copy-key" data-session-key="${escapeHtml(session.key)}" data-session-sessionless="${session.sessionless}">Copy</button> <span class="session-head-endpoints">${escapeHtml(session.endpoints.join(", "))}${multiModel ? " · click a model to filter" : ""}</span></div>${table}${renderEventsFooter(entry)}`
+}
+
+// --- Model breakdown and filter (spec §5.5, §5.10) ---
+
+/**
+ * Turns the model filter on, switches it, or (for the active model or null)
+ * turns it off. The rows clear and the newest 50 reload under the new filter.
+ * @param {SessionsState} state
+ * @param {string} identity
+ * @param {string | null} model
+ * @returns {SessionEventsTransition}
+ */
+export function toggleModelFilter(state, identity, model) {
+  const entry = state.expanded[identity]
+  if (!entry) return { requests: [], state }
+  const filter = model === entry.filter ? null : model
+  return requestSessionEvents(
+    state,
+    {
+      ...entry,
+      filter,
+      hasMore: false,
+      items: [],
+      nextCursor: null,
+      stale: false,
+      total: 0,
+    },
+    { before: null, mode: "replace" },
+  )
+}
+
+/**
+ * The filter target attributes shared by the breakdown row, its button and the footer's clear button.
+ * @param {SessionExpansion} entry
+ * @returns {string}
+ */
+function filterTarget(entry) {
+  return `data-session-action="filter" data-session-key="${escapeHtml(entry.key)}" data-session-sessionless="${entry.sessionless}"`
+}
+
+/**
+ * The per-model breakdown: a `<thead>` and a `<tbody>` with one row per model in
+ * API order. Empty unless the session has more than one model.
+ * @param {TokenUsageSession} session
+ * @param {SessionExpansion} entry
+ * @param {{ nowMs: number }} options
+ * @returns {string}
+ */
+export function renderBreakdownRows(session, entry, { nowMs }) {
+  if (session.byModel.length <= 1) return ""
+  const heads = [
+    ["Model · requests", ""],
+    ["Active", ' colspan="2"'],
+    ["Input", ' class="session-num"'],
+    ["Output", ' class="session-num"'],
+    ["Cache Read", ' class="session-num"'],
+    ["Cache Write", ' class="session-num"'],
+    ["Total", ' class="session-num"'],
+    ["Cost", ' class="session-num"'],
+    ["Share of tokens", ""],
+  ]
+  const header = heads
+    .map(([label, attrs]) => `<th scope="col"${attrs}>${label}</th>`)
+    .join("")
+  const partsSum =
+    session.input_tokens
+    + session.output_tokens
+    + session.cache_read_input_tokens
+    + session.cache_creation_input_tokens
+  const rows = session.byModel.map((model) => {
+    const pressed = entry.filter === model.model
+    const classes = [
+      "session-breakdown-row",
+      pressed ? "session-breakdown-pressed" : "",
+      entry.filter !== null && !pressed ? "session-breakdown-dim" : "",
+    ]
+      .filter(Boolean)
+      .join(" ")
+    const name = escapeHtml(model.model)
+    /** @param {string} label @param {number} value @param {string} color */
+    const part = (label, value, color) => ({
+      color,
+      fraction: partsSum > 0 ? value / partsSum : 0,
+      label: `${label} ${formatInteger(value)}`,
+    })
+    const bar = renderBar("session-share-bar", [
+      part("Input", model.input_tokens, "var(--color-series-input)"),
+      part("Output", model.output_tokens, "var(--color-series-output)"),
+      part(
+        "Cache read",
+        model.cache_read_input_tokens,
+        "var(--color-series-cache-read)",
+      ),
+      part(
+        "Cache write",
+        model.cache_creation_input_tokens,
+        "var(--color-series-cache-write)",
+      ),
+    ])
+    return `<tr class="${classes}" ${filterTarget(entry)} data-model="${name}">
+<td><button type="button" class="session-breakdown-button" aria-pressed="${pressed}" ${filterTarget(entry)} data-model="${name}"><span class="session-dot" aria-hidden="true" style="background:${creatorColor(model.model)}"></span>${name}<b>${formatInteger(model.request_count)}</b></button></td>
+<td class="session-breakdown-active session-mono" colspan="2">${escapeHtml(formatActiveRange(model.first_ms, model.last_ms, nowMs))}</td>
+<td class="session-num">${formatInteger(model.input_tokens)}</td>
+<td class="session-num">${formatInteger(model.output_tokens)}</td>
+<td class="session-num">${formatInteger(model.cache_read_input_tokens)}</td>
+<td class="session-num">${formatInteger(model.cache_creation_input_tokens)}</td>
+<td class="session-num session-total session-breakdown-total">${formatInteger(model.total_tokens)}</td>
+<td class="session-num session-event-cost session-breakdown-cost">${formatCostList(model.costs)}</td>
+<td class="session-share">${bar}<span class="session-share-percent">${escapeHtml(formatPercent(model.total_tokens, session.total_tokens))}</span></td>
+</tr>`
+  })
+  return `<thead><tr>${header}</tr></thead><tbody class="session-breakdown">${rows.join("")}</tbody>`
+}
+
+/**
+ * The footer's active-filter chip: " · only ‹model› " and a "clear" button, or
+ * nothing without a filter. Shown in every footer state.
+ * @param {SessionExpansion} entry
+ * @returns {string}
+ */
+function renderFilterChip(entry) {
+  if (entry.filter === null) return ""
+  return ` · only ${escapeHtml(entry.filter)} <button type="button" class="session-link-button" ${filterTarget(entry)}>clear</button>`
 }

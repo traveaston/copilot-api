@@ -916,6 +916,66 @@
         left: 10px;
       }
 
+      .session-breakdown-row {
+        cursor: pointer;
+      }
+
+      .session-events-table .session-breakdown-row td {
+        padding: 7px 10px;
+      }
+
+      .session-events-table .session-breakdown-row:hover td,
+      .session-events-table .session-breakdown-pressed td {
+        background: var(--color-sunken);
+      }
+
+      .session-events-table .session-breakdown-pressed td:first-child {
+        box-shadow: inset 3px 0 0 var(--color-accent);
+      }
+
+      .session-breakdown-dim td:not(:first-child),
+      .session-breakdown-dim td:first-child > button {
+        opacity: 0.45;
+      }
+
+      .session-breakdown-button {
+        color: inherit;
+        cursor: pointer;
+        font: inherit;
+        text-align: left;
+      }
+
+      .session-breakdown-button b {
+        margin-left: 6px;
+        color: var(--color-ink-strong);
+      }
+
+      .session-breakdown-active {
+        color: var(--color-ink-soft);
+      }
+
+      .session-breakdown-total,
+      .session-breakdown-cost {
+        font-weight: 600;
+      }
+
+      .session-share {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+
+      .session-share-bar {
+        width: 90px;
+        flex: none;
+        margin-top: 0;
+      }
+
+      .session-share-percent {
+        color: var(--color-ink-soft);
+        font-size: 11px;
+      }
+
       .session-events-footer {
         padding: 6px 0 2px;
         color: var(--color-ink-soft);
@@ -3428,6 +3488,14 @@
             runSessionEventsTransition(
               usageViewerSessions.retryEvents(state.sessions, identity)
             );
+          } else if (action === "filter") {
+            runSessionEventsTransition(
+              usageViewerSessions.toggleModelFilter(
+                state.sessions,
+                identity,
+                button.dataset.model ?? null
+              )
+            );
           }
         }
 
@@ -3484,7 +3552,7 @@
             selectSessionsView(button.dataset.sessionView);
             return;
           }
-          if (state.sessions && ["toggle", "more", "retry"].includes(action)) {
+          if (state.sessions && ["toggle", "more", "retry", "filter"].includes(action)) {
             handleSessionExpansionAction(action, button);
             return;
           }

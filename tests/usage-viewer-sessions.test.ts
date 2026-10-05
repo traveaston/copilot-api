@@ -49,10 +49,12 @@ import {
   renderSessionsMeta,
   renderSessionsPager,
   renderSessionsTabs,
+  renderBreakdownRows,
   retryEvents,
   setView,
   showMoreEvents,
   startSessionsLoad,
+  toggleModelFilter,
   toggleSession,
   writeViewParam,
 } from "../pages/usage-viewer/sessions.js"
@@ -2054,6 +2056,455 @@ describe("renderSessionExpansion and the expanded card", () => {
       "true",
     )
     expect(root.textContent).toContain("Loading events...")
+  })
+})
+
+// --- Model breakdown and filter (ticket 16) ---
+
+const MODEL_A = "claude-opus-4"
+const MODEL_B = "gpt-5"
+
+function modelEntryOf(
+  model: string,
+  overrides: Partial<TokenUsageSession["byModel"][number]> = {},
+): TokenUsageSession["byModel"][number] {
+  return {
+    cache_creation_input_tokens: 0,
+    cache_read_input_tokens: 0,
+    costs: [{ amount: 1, currency: "USD", total_cost_nanos: 1_000_000_000 }],
+    first_ms: at(2026, 9, 29, 17, 29),
+    input_tokens: 0,
+    last_ms: at(2026, 9, 29, 21, 41),
+    model,
+    output_tokens: 0,
+    request_count: 3,
+    total_nano_aiu: null,
+    total_tokens: 0,
+    ...overrides,
+  }
+}
+
+const MULTI = sessionOf({
+  byModel: [
+    modelEntryOf(MODEL_A, {
+      cache_read_input_tokens: 600,
+      input_tokens: 300,
+      output_tokens: 80,
+      request_count: 9,
+      total_tokens: 1_000,
+    }),
+    modelEntryOf(MODEL_B, {
+      cache_creation_input_tokens: 20,
+      input_tokens: 100,
+      output_tokens: 100,
+      request_count: 1,
+      total_tokens: 3_000,
+    }),
+  ],
+  cache_creation_input_tokens: 20,
+  cache_read_input_tokens: 600,
+  input_tokens: 400,
+  output_tokens: 180,
+  total_tokens: 4_000,
+})
+const MULTI_ID = identityOf(MULTI)
+
+function multiEntry(overrides: Record<string, unknown> = {}) {
+  const opened = toggleSession(loadedState("sessions"), MULTI)
+  const loaded = applySessionEvents(opened.state, {
+    identity: MULTI_ID,
+    page: eventsPageOf({
+      has_more: true,
+      items: [eventOf({ id: 1 }), eventOf({ id: 2 })],
+      next_cursor: "9:9",
+      total: 80,
+    }),
+    requestId: opened.requests[0].requestId,
+  }).state
+  return {
+    ...loaded,
+    expanded: {
+      ...loaded.expanded,
+      [MULTI_ID]: { ...loaded.expanded[MULTI_ID], ...overrides },
+    },
+  }
+}
+
+describe("toggleModelFilter", () => {
+  test("choosing a model clears the rows and requests the newest 50 for it", () => {
+    const { requests, state } = toggleModelFilter(
+      multiEntry(),
+      MULTI_ID,
+      MODEL_A,
+    )
+    const entry = state.expanded[MULTI_ID]
+
+    expect(entry).toMatchObject({
+      filter: MODEL_A,
+      hasMore: false,
+      items: [],
+      loading: true,
+      nextCursor: null,
+      stale: false,
+      total: 0,
+    })
+    expect(requests).toEqual([
+      {
+        before: null,
+        identity: MULTI_ID,
+        key: MULTI.key,
+        kind: "session-events",
+        limit: 50,
+        mode: "replace",
+        model: MODEL_A,
+        requestId: requests[0].requestId,
+        sessionless: false,
+      },
+    ])
+    expect(entry.requestId).toBe(requests[0].requestId)
+  })
+
+  test("choosing the active model again removes the filter and reloads unfiltered", () => {
+    const on = toggleModelFilter(multiEntry(), MULTI_ID, MODEL_A).state
+    const off = toggleModelFilter(on, MULTI_ID, MODEL_A)
+
+    expect(off.state.expanded[MULTI_ID].filter).toBeNull()
+    expect(off.state.expanded[MULTI_ID].items).toEqual([])
+    expect(off.requests[0].model).toBeNull()
+  })
+
+  test("null clears the filter, and another model switches it", () => {
+    const on = toggleModelFilter(multiEntry(), MULTI_ID, MODEL_A).state
+    expect(
+      toggleModelFilter(on, MULTI_ID, null).state.expanded[MULTI_ID].filter,
+    ).toBeNull()
+    expect(toggleModelFilter(on, MULTI_ID, MODEL_B).requests[0].model).toBe(
+      MODEL_B,
+    )
+  })
+
+  test("a response for the previous filter is dropped as stale", () => {
+    const first = toggleModelFilter(multiEntry(), MULTI_ID, MODEL_A)
+    const second = toggleModelFilter(first.state, MULTI_ID, MODEL_B)
+    const late = applySessionEvents(second.state, {
+      identity: MULTI_ID,
+      page: eventsPageOf(),
+      requestId: first.requests[0].requestId,
+    })
+    expect(late.state).toBe(second.state)
+  })
+
+  test("a collapsed session does nothing", () => {
+    const state = loadedState("sessions")
+    const result = toggleModelFilter(state, MULTI_ID, MODEL_A)
+    expect(result.state).toBe(state)
+    expect(result.requests).toEqual([])
+  })
+
+  test("Show more and Retry keep the filter and cursor", () => {
+    const filtered = applySessionEvents(
+      toggleModelFilter(multiEntry(), MULTI_ID, MODEL_A).state,
+      {
+        identity: MULTI_ID,
+        page: eventsPageOf({ has_more: true, next_cursor: "7:7", total: 60 }),
+        requestId: toggleModelFilter(multiEntry(), MULTI_ID, MODEL_A)
+          .requests[0].requestId,
+      },
+    )
+    expect(filtered.state.expanded[MULTI_ID].filter).toBe(MODEL_A)
+
+    const more = showMoreEvents(filtered.state, MULTI_ID)
+    expect(more.requests[0]).toMatchObject({
+      before: "7:7",
+      mode: "append",
+      model: MODEL_A,
+    })
+
+    const failed = applySessionEventsError(more.state, {
+      identity: MULTI_ID,
+      message: "boom",
+      requestId: more.requests[0].requestId,
+    })
+    const retried = retryEvents(failed.state, MULTI_ID)
+    expect(retried.requests[0]).toMatchObject({
+      before: "7:7",
+      mode: "append",
+      model: MODEL_A,
+    })
+  })
+})
+
+describe("renderBreakdownRows", () => {
+  const entry = () => multiEntry().expanded[MULTI_ID]
+  const render = (session = MULTI, overrides: Record<string, unknown> = {}) =>
+    parse(
+      `<table>${renderBreakdownRows(session, { ...entry(), ...overrides }, { nowMs: NOW })}</table>`,
+    )
+
+  test("only a session with more than one model has a breakdown", () => {
+    expect(renderBreakdownRows(MULTI, entry(), { nowMs: NOW })).not.toBe("")
+    for (const byModel of [[], [modelEntryOf(MODEL_A)]]) {
+      expect(
+        renderBreakdownRows(sessionOf({ byModel }), entry(), { nowMs: NOW }),
+      ).toBe("")
+    }
+  })
+
+  test("header and one row per model in API order", () => {
+    const root = render()
+    const heads = [...root.querySelectorAll("thead th")].map(
+      (th) => th.textContent,
+    )
+    const rows = [...root.querySelectorAll("tbody tr")]
+
+    expect(heads).toEqual([
+      "Model · requests",
+      "Active",
+      "Input",
+      "Output",
+      "Cache Read",
+      "Cache Write",
+      "Total",
+      "Cost",
+      "Share of tokens",
+    ])
+    expect(
+      root.querySelector("thead th:nth-child(2)")?.getAttribute("colspan"),
+    ).toBe("2")
+    expect(rows).toHaveLength(2)
+    const cells = [...rows[0].querySelectorAll("td")].map(
+      (td) => td.textContent,
+    )
+    expect(cells[0]).toBe(`${MODEL_A}9`)
+    expect(cells.slice(2, 8)).toEqual([
+      "300",
+      "80",
+      "600",
+      "0",
+      "1,000",
+      "$1.00",
+    ])
+    expect(rows[1].querySelector("td")?.textContent).toBe(`${MODEL_B}1`)
+  })
+
+  test("the first cell is a button whose aria-pressed follows the filter", () => {
+    const off = render()
+    const button = off.querySelector("tbody tr td:first-child button")
+    expect(button?.getAttribute("type")).toBe("button")
+    expect(button?.getAttribute("aria-pressed")).toBe("false")
+    expect(button?.getAttribute("data-session-action")).toBe("filter")
+    expect(button?.getAttribute("data-model")).toBe(MODEL_A)
+    expect(button?.getAttribute("data-session-key")).toBe(MULTI.key)
+    expect(button?.getAttribute("data-session-sessionless")).toBe("false")
+
+    const on = render(MULTI, { filter: MODEL_B })
+    const pressed = [...on.querySelectorAll("tbody tr")].map((row) =>
+      row.querySelector("button")?.getAttribute("aria-pressed"),
+    )
+    expect(pressed).toEqual(["false", "true"])
+  })
+
+  test("a click anywhere on the row toggles, and an active filter dims the others", () => {
+    const root = render(MULTI, { filter: MODEL_B })
+    const [first, second] = [...root.querySelectorAll("tbody tr")]
+
+    expect(first.getAttribute("data-session-action")).toBe("filter")
+    expect(first.getAttribute("data-model")).toBe(MODEL_A)
+    expect(first.classList.contains("session-breakdown-dim")).toBe(true)
+    expect(first.classList.contains("session-breakdown-pressed")).toBe(false)
+    expect(second.classList.contains("session-breakdown-pressed")).toBe(true)
+    expect(second.classList.contains("session-breakdown-dim")).toBe(false)
+    expect(
+      [...render().querySelectorAll("tbody tr")].some((row) =>
+        row.classList.contains("session-breakdown-dim"),
+      ),
+    ).toBe(false)
+  })
+
+  test("dots carry the creator colour", () => {
+    const dot = render().querySelector("tbody tr .session-dot")
+    expect(dot?.getAttribute("style")).toContain(creatorColor(MODEL_A))
+  })
+
+  test("the share bar sizes the four parts against the session's sum of parts", () => {
+    const row = render().querySelector("tbody tr")!
+    const widths = [...row.querySelectorAll("[data-bar-segment]")].map((s) =>
+      s.getAttribute("style"),
+    )
+    // session parts sum to 400 + 180 + 600 + 20 = 1200; model A: 300/80/600/0
+    expect(widths).toHaveLength(4)
+    expect(widths[0]).toContain("width:25%")
+    expect(widths[2]).toContain("width:50%")
+    expect(widths[3]).toContain("width:0%")
+    expect(row.querySelector(".session-bar")?.className).toContain(
+      "session-share-bar",
+    )
+    expect(row.querySelector("td:last-child")?.textContent).toContain("25%")
+    expect(
+      render().querySelector("tbody tr:nth-child(2) td:last-child")
+        ?.textContent,
+    ).toContain("75%")
+  })
+
+  test("a session with no token parts gets empty bars", () => {
+    const flat = sessionOf({
+      byModel: [modelEntryOf(MODEL_A), modelEntryOf(MODEL_B)],
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 0,
+      input_tokens: 0,
+      output_tokens: 0,
+      total_tokens: 0,
+    })
+    const widths = [
+      ...render(flat).querySelectorAll(
+        "tbody tr:first-child [data-bar-segment]",
+      ),
+    ].map((s) => s.getAttribute("style"))
+    expect(widths.every((w) => w?.includes("width:0%"))).toBe(true)
+  })
+
+  test("escapes model names", () => {
+    const evil = sessionOf({
+      byModel: [modelEntryOf("<i>x</i>"), modelEntryOf(MODEL_B)],
+    })
+    const root = render(evil)
+    expect(root.querySelector("i")).toBeNull()
+    expect(root.querySelector("tbody tr td")?.textContent).toContain("<i>x</i>")
+  })
+})
+
+describe("multi-model expansion", () => {
+  const expansion = (overrides: Record<string, unknown> = {}) =>
+    parse(
+      renderSessionExpansion(MULTI, multiEntry(overrides).expanded[MULTI_ID], {
+        nowMs: NOW,
+      }),
+    )
+
+  test("breakdown sits above an Events sub-header and the rows", () => {
+    const root = expansion()
+    expect(root.querySelectorAll("table")).toHaveLength(1)
+    expect(root.querySelectorAll("tbody.session-breakdown")).toHaveLength(1)
+    const heads = [
+      ...root.querySelectorAll(".session-events-subheader th"),
+    ].map((th) => th.textContent)
+    expect(heads).toEqual([
+      "Events",
+      "Time",
+      "Gap",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "Trace",
+    ])
+    const order = [...root.querySelectorAll("table > *")].map(
+      (el) => el.className || el.tagName,
+    )
+    expect(order).toEqual(["THEAD", "session-breakdown", "session-events-body"])
+  })
+
+  test("the head line gains the filter hint", () => {
+    expect(expansion().querySelector(".session-head")?.textContent).toContain(
+      " · click a model to filter",
+    )
+  })
+
+  test("a single-model session has neither breakdown, hint nor Events header", () => {
+    const single = sessionOf({ byModel: [modelEntryOf(MODEL_A)] })
+    const opened = toggleSession(loadedState("sessions"), single)
+    const entry = applySessionEvents(opened.state, {
+      identity: identityOf(single),
+      page: eventsPageOf(),
+      requestId: opened.requests[0].requestId,
+    }).state.expanded[identityOf(single)]
+    const root = parse(renderSessionExpansion(single, entry, { nowMs: NOW }))
+
+    expect(root.querySelector(".session-breakdown")).toBeNull()
+    expect(root.querySelector(".session-head")?.textContent).not.toContain(
+      "click a model",
+    )
+    expect(
+      root.querySelector(".session-events-subheader th")?.textContent,
+    ).toBe("Model")
+  })
+
+  test("the breakdown shows on expand before any rows, then the filter clears rows but keeps it", () => {
+    const opened = toggleSession(loadedState("sessions"), MULTI)
+    const fresh = parse(
+      renderSessionExpansion(MULTI, opened.state.expanded[MULTI_ID], {
+        nowMs: NOW,
+      }),
+    )
+    expect(fresh.querySelectorAll(".session-breakdown-row")).toHaveLength(2)
+    expect(fresh.querySelector(".session-events-body")).toBeNull()
+    expect(fresh.textContent).toContain("Loading events...")
+
+    const filtered = toggleModelFilter(multiEntry(), MULTI_ID, MODEL_B).state
+    const root = parse(
+      renderSessionExpansion(MULTI, filtered.expanded[MULTI_ID], {
+        nowMs: NOW,
+      }),
+    )
+    expect(root.querySelectorAll(".session-breakdown-row")).toHaveLength(2)
+    expect(
+      root.querySelector("button[aria-pressed=true]")?.textContent,
+    ).toContain(MODEL_B)
+    expect(root.querySelectorAll(".session-event-row")).toHaveLength(0)
+  })
+
+  test("event rows are creator-coloured", () => {
+    const dot = expansion().querySelector(".session-event-row .session-dot")
+    expect(dot?.getAttribute("style")).toContain(creatorColor(MODEL_A))
+  })
+})
+
+describe("filter chip in the events footer", () => {
+  const base = multiEntry().expanded[MULTI_ID]
+  const footer = (overrides: Record<string, unknown>) =>
+    parse(renderEventsFooter({ ...base, filter: MODEL_A, ...overrides }))
+  const states: Array<[string, Record<string, unknown>, string]> = [
+    ["loading", { loading: true }, "Loading events..."],
+    ["error", { error: "boom", loading: false }, "boom"],
+    [
+      "empty",
+      { items: [], loading: false, total: 0 },
+      "No events in this period.",
+    ],
+    [
+      "loaded",
+      { loading: false, total: 2, hasMore: false },
+      "Showing 2 of 2 events",
+    ],
+    ["loaded with more", { loading: false, total: 80 }, "Show 50 more"],
+  ]
+
+  for (const [name, overrides, text] of states) {
+    test(`${name}: appends only ‹model› and a clear button`, () => {
+      const root = footer(overrides)
+      const clear = root.querySelector("button[data-session-action=filter]")
+
+      expect(root.textContent).toContain(text)
+      expect(root.textContent).toContain(` · only ${MODEL_A} clear`)
+      expect(clear?.textContent).toBe("clear")
+      expect(clear?.getAttribute("data-model")).toBeNull()
+      expect(clear?.getAttribute("data-session-key")).toBe(MULTI.key)
+      expect(clear?.getAttribute("data-session-sessionless")).toBe("false")
+    })
+  }
+
+  test("without a filter there is no chip", () => {
+    const root = footer({ filter: null, loading: true })
+    expect(root.textContent).not.toContain("only")
+    expect(root.querySelector("[data-session-action=filter]")).toBeNull()
+  })
+
+  test("the model name is escaped", () => {
+    const root = footer({ filter: "<b>x</b>", loading: true })
+    expect(root.querySelector("b")).toBeNull()
+    expect(root.textContent).toContain("only <b>x</b>")
   })
 })
 
