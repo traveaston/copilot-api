@@ -5,6 +5,8 @@
 /** @typedef {import("~/lib/token-usage").TokenUsageSession} TokenUsageSession */
 /** @typedef {import("~/lib/token-usage").TokenUsageCost} TokenUsageCost */
 /** @typedef {import("~/lib/token-usage").TokenUsageSessionsPage} TokenUsageSessionsPage */
+/** @typedef {import("~/lib/token-usage").TokenUsageSessionEventRecord} TokenUsageSessionEventRecord */
+/** @typedef {import("~/lib/token-usage").TokenUsageSessionEventsPage} TokenUsageSessionEventsPage */
 
 /**
  * Currency symbols, identical to the map in the inline `formatCurrencyAmount`.
@@ -320,6 +322,7 @@ export function formatCostList(costs) {
  * @property {number | null} requestId The latest list request id; other responses are dropped.
  * @property {number} nextRequestId The request id counter.
  * @property {boolean} lostPageRefetched Whether this load already re-fetched a lost page.
+ * @property {Readonly<Record<string, SessionExpansion>>} expanded Open sessions by identity.
  *
  * @typedef {{ state: SessionsState, requests: SessionsRequest[] }} SessionsTransition
  */
@@ -333,6 +336,7 @@ export function createSessionsState(view) {
   return {
     available: true,
     error: null,
+    expanded: {},
     loading: false,
     lostPageRefetched: false,
     nextRequestId: 1,
@@ -405,6 +409,8 @@ export function applySessionsPage(state, { requestId, page }) {
     state: {
       ...state,
       available: true,
+      // A page move is a deliberate move away, so it collapses everything.
+      expanded: state.reason === "page" ? {} : state.expanded,
       loading: false,
       page,
       reason: null,
@@ -757,16 +763,17 @@ function renderTokenMarks(session) {
  * One session card: a header button over an expansion region. The region is
  * empty and hidden until a session can expand.
  * @param {TokenUsageSession} session
- * @param {{ index: number, nowMs: number, range?: { start_ms: number, end_ms: number } | null }} options `index` is the card's 0-based position on the page; `range` is the period the span track is placed within.
+ * @param {{ expansion?: SessionExpansion, index: number, nowMs: number, range?: { start_ms: number, end_ms: number } | null }} options `index` is the card's 0-based position on the page; `expansion` is the session's open entry, if any; `range` is the period the span track is placed within.
  * @returns {string}
  */
-export function renderSessionCard(session, { index, nowMs, range }) {
+export function renderSessionCard(session, { expansion, index, nowMs, range }) {
+  const expanded = expansion !== undefined
   const panelId = `session-panel-${index}`
   const lastActive = new Date(session.last_ms).toLocaleString()
   const day = `${formatDayLabel(session.last_ms, nowMs)} · ${formatDuration(session.last_ms - session.first_ms)}`
   const requestWord = session.request_count === 1 ? "request" : "requests"
-  return `<article class="session-card" data-expanded="false">
-  <button type="button" class="session-card-header" aria-expanded="false" aria-controls="${panelId}" data-session-action="toggle" data-session-key="${escapeHtml(session.key)}" data-session-sessionless="${session.sessionless}">
+  return `<article class="session-card" data-expanded="${expanded}">
+  <button type="button" class="session-card-header" aria-expanded="${expanded}" aria-controls="${panelId}" data-session-action="toggle" data-session-key="${escapeHtml(session.key)}" data-session-sessionless="${session.sessionless}">
     <span class="session-when">
       <span class="session-clock" title="${escapeHtml(lastActive)}">${escapeHtml(formatClock(session.last_ms))}</span>
       <span class="session-age">${escapeHtml(formatAge(session.last_ms, nowMs))}</span>
@@ -792,7 +799,7 @@ export function renderSessionCard(session, { index, nowMs, range }) {
     </span>
     <span class="session-chevron" aria-hidden="true">▸</span>
   </button>
-  <div class="session-expansion" id="${panelId}" hidden></div>
+  <div class="session-expansion" id="${panelId}"${expanded ? "" : " hidden"}>${expanded ? renderSessionExpansion(session, expansion, { nowMs }) : ""}</div>
 </article>`
 }
 
@@ -840,8 +847,354 @@ function renderSessionsList(state, { nowMs, renderEmptyState, renderError }) {
   }
   const cards = page.items
     .map((session, index) =>
-      renderSessionCard(session, { index, nowMs, range: page.range }),
+      renderSessionCard(session, {
+        expansion: state.expanded[identityOf(session)],
+        index,
+        nowMs,
+        range: page.range,
+      }),
     )
     .join("")
   return `${error}<div class="sessions-list" ${loading}>${cards}</div>`
+}
+
+// --- Session expansion: lazy event rows (spec §3, §5.5, §5.11) ---
+
+/**
+ * @typedef {object} SessionEventsRequest
+ * @property {"session-events"} kind
+ * @property {number} requestId
+ * @property {string} identity
+ * @property {string} key
+ * @property {boolean} sessionless
+ * @property {string | null} model The model filter, or null.
+ * @property {string | null} before The cursor to continue from, or null for the newest rows.
+ * @property {number} limit
+ * @property {"replace" | "append"} mode
+ *
+ * @typedef {object} SessionExpansion One open session's loaded events.
+ * @property {string} key
+ * @property {boolean} sessionless
+ * @property {string | null} filter The model filter, or null.
+ * @property {ReadonlyArray<TokenUsageSessionEventRecord>} items
+ * @property {number} total
+ * @property {boolean} hasMore
+ * @property {string | null} nextCursor
+ * @property {boolean} loading
+ * @property {boolean} stale Whether the rows are the old ones still shown during a reload.
+ * @property {string | null} error The last request's error message.
+ * @property {number | null} requestId The latest request id; other responses are dropped.
+ * @property {SessionEventsRequest | null} lastRequest The latest request, repeated by Retry.
+ *
+ * @typedef {{ state: SessionsState, requests: SessionEventsRequest[] }} SessionEventsTransition
+ */
+
+/**
+ * Builds the session events URL from the absolute `/token-usage` URL. Sends
+ * `session_id=` or `trace_id=` by `sessionless`, and omits a null `model` and `before`.
+ * @param {string} tokenUsageUrl
+ * @param {{ period: TokenUsagePeriod, key: string, sessionless: boolean, model: string | null, limit: number, before: string | null }} options
+ * @returns {string}
+ */
+export function buildSessionEventsUrl(
+  tokenUsageUrl,
+  { before, key, limit, model, period, sessionless },
+) {
+  const url = appendPath(tokenUsageUrl, "session-events")
+  url.searchParams.set("period", period)
+  url.searchParams.set(sessionless ? "trace_id" : "session_id", key)
+  if (model !== null) url.searchParams.set("model", model)
+  url.searchParams.set("limit", String(limit))
+  if (before !== null) url.searchParams.set("before", before)
+  return url.toString()
+}
+
+/**
+ * Gap since the previous event: "—" when null, else "+42s", "+3m 5s", "+1h 20m", "+2d 3h".
+ * @param {number | null} gapMs
+ * @returns {string}
+ */
+export function formatGap(gapMs) {
+  if (gapMs === null) return "—"
+  if (gapMs < MINUTE_MS) return `+${Math.floor(Math.max(gapMs, 0) / 1000)}s`
+  if (gapMs < HOUR_MS) {
+    return `+${joinUnits(`${Math.floor(gapMs / MINUTE_MS)}m`, Math.floor((gapMs % MINUTE_MS) / 1000), "s")}`
+  }
+  return `+${formatDuration(gapMs)}`
+}
+
+/**
+ * Whether a gap is long enough to emphasise (15 minutes or more).
+ * @param {number | null} gapMs
+ * @returns {boolean}
+ */
+export function isLongGap(gapMs) {
+  return gapMs !== null && gapMs >= LONG_GAP_MS
+}
+
+/**
+ * Issues an events request with a fresh id and records it on the session's entry.
+ * @param {SessionsState} state
+ * @param {SessionExpansion} entry The entry as it should be once the request is in flight.
+ * @param {{ before: string | null, mode: "replace" | "append" }} options
+ * @returns {SessionEventsTransition}
+ */
+function requestSessionEvents(state, entry, { before, mode }) {
+  const requestId = state.nextRequestId
+  /** @type {SessionEventsRequest} */
+  const request = {
+    before,
+    identity: identityOf(entry),
+    key: entry.key,
+    kind: "session-events",
+    limit: SESSION_EVENTS_LIMIT,
+    mode,
+    model: entry.filter,
+    requestId,
+    sessionless: entry.sessionless,
+  }
+  return {
+    requests: [request],
+    state: {
+      ...state,
+      expanded: {
+        ...state.expanded,
+        [request.identity]: {
+          ...entry,
+          error: null,
+          lastRequest: request,
+          loading: true,
+          requestId,
+        },
+      },
+      nextRequestId: requestId + 1,
+    },
+  }
+}
+
+/**
+ * Opens a collapsed session and loads its newest events; collapsing discards its entry.
+ * @param {SessionsState} state
+ * @param {Pick<TokenUsageSession, "key" | "sessionless">} session
+ * @returns {SessionEventsTransition}
+ */
+export function toggleSession(state, session) {
+  const identity = identityOf(session)
+  if (state.expanded[identity]) {
+    const { [identity]: _closed, ...rest } = state.expanded
+    return { requests: [], state: { ...state, expanded: rest } }
+  }
+  return requestSessionEvents(
+    state,
+    {
+      error: null,
+      filter: null,
+      hasMore: false,
+      items: [],
+      key: session.key,
+      lastRequest: null,
+      loading: true,
+      nextCursor: null,
+      requestId: null,
+      sessionless: session.sessionless,
+      stale: false,
+      total: 0,
+    },
+    { before: null, mode: "replace" },
+  )
+}
+
+/**
+ * Loads the next older page of an open session. Does nothing while loading or at the end.
+ * @param {SessionsState} state
+ * @param {string} identity
+ * @returns {SessionEventsTransition}
+ */
+export function showMoreEvents(state, identity) {
+  const entry = state.expanded[identity]
+  if (!entry || entry.loading || !entry.hasMore || entry.nextCursor === null) {
+    return { requests: [], state }
+  }
+  return requestSessionEvents(state, entry, {
+    before: entry.nextCursor,
+    mode: "append",
+  })
+}
+
+/**
+ * Repeats the failed request with the same filter and cursor.
+ * @param {SessionsState} state
+ * @param {string} identity
+ * @returns {SessionEventsTransition}
+ */
+export function retryEvents(state, identity) {
+  const entry = state.expanded[identity]
+  if (!entry || entry.loading || !entry.error || !entry.lastRequest) {
+    return { requests: [], state }
+  }
+  const { before, mode } = entry.lastRequest
+  return requestSessionEvents(state, entry, { before, mode })
+}
+
+/**
+ * Applies an events response. Drops it when the session has collapsed or the
+ * request isn't the session's latest.
+ * @param {SessionsState} state
+ * @param {{ identity: string, requestId: number, page: TokenUsageSessionEventsPage }} response
+ * @returns {SessionEventsTransition}
+ */
+export function applySessionEvents(state, { identity, page, requestId }) {
+  const entry = state.expanded[identity]
+  if (!entry || entry.requestId !== requestId) return { requests: [], state }
+  const append = entry.lastRequest?.mode === "append"
+  return {
+    requests: [],
+    state: {
+      ...state,
+      expanded: {
+        ...state.expanded,
+        [identity]: {
+          ...entry,
+          error: null,
+          hasMore: page.has_more,
+          items: append ? [...entry.items, ...page.items] : page.items,
+          loading: false,
+          nextCursor: page.next_cursor,
+          stale: false,
+          total: page.total,
+        },
+      },
+    },
+  }
+}
+
+/**
+ * Applies a failed events request, keeping the rows already loaded.
+ * @param {SessionsState} state
+ * @param {{ identity: string, requestId: number, message: string }} failure
+ * @returns {SessionEventsTransition}
+ */
+export function applySessionEventsError(
+  state,
+  { identity, message, requestId },
+) {
+  const entry = state.expanded[identity]
+  if (!entry || entry.requestId !== requestId) return { requests: [], state }
+  return {
+    requests: [],
+    state: {
+      ...state,
+      expanded: {
+        ...state.expanded,
+        [identity]: { ...entry, error: message, loading: false },
+      },
+    },
+  }
+}
+
+/**
+ * The expansion's footer: loading, error with Retry, empty, or Show more and the count.
+ * @param {SessionExpansion} entry
+ * @returns {string}
+ */
+export function renderEventsFooter(entry) {
+  const target = `data-session-key="${escapeHtml(entry.key)}" data-session-sessionless="${entry.sessionless}"`
+  /** @param {string} action @param {string} label */
+  const button = (action, label) =>
+    `<button type="button" class="session-link-button" data-session-action="${action}" ${target}>${label}</button>`
+  let content
+  if (entry.loading) {
+    content = "Loading events..."
+  } else if (entry.error) {
+    content = `<span class="session-footer-error" role="alert">${escapeHtml(entry.error)}</span> ${button("retry", "Retry")}`
+  } else if (entry.total === 0) {
+    content = "No events in this period."
+  } else {
+    const remaining = Math.min(
+      SESSION_EVENTS_LIMIT,
+      entry.total - entry.items.length,
+    )
+    const more =
+      entry.hasMore ?
+        `${button("more", `Show ${formatInteger(remaining)} more`)} `
+      : ""
+    content = `${more}Showing ${formatInteger(entry.items.length)} of ${pluralize(entry.total, "event")}`
+  }
+  return `<div class="session-events-footer">${content}</div>`
+}
+
+/**
+ * The events `<tbody>`: the single-model sub-header, then one row per event,
+ * with day dividers in a multi-day session.
+ * @param {ReadonlyArray<TokenUsageSessionEventRecord & { prev_ms?: number | null }>} items
+ * @param {{ multiDay: boolean, nowMs: number }} options
+ * @returns {string}
+ */
+export function renderEventRows(items, { multiDay, nowMs }) {
+  const heads = [
+    "Model",
+    "Time",
+    "Gap",
+    "Input",
+    "Output",
+    "Cache Read",
+    "Cache Write",
+    "Total",
+    "Cost",
+    "Trace",
+  ]
+  const numeric = new Set([3, 4, 5, 6, 7, 8])
+  const header = heads
+    .map(
+      (head, index) =>
+        `<th scope="col"${numeric.has(index) ? ' class="session-num"' : ""}>${head}</th>`,
+    )
+    .join("")
+  const rows = items.map((event, index) => {
+    const divider =
+      (
+        multiDay
+        && (index === 0
+          || !isSameDay(items[index - 1].created_at_ms, event.created_at_ms))
+      ) ?
+        `<tr class="session-day-row"><td colspan="10"><span class="session-day-label">${escapeHtml(formatDayLabel(event.created_at_ms, nowMs))}</span></td></tr>`
+      : ""
+    const gapMs =
+      event.prev_ms == null ? null : event.created_at_ms - event.prev_ms
+    const gapClass =
+      isLongGap(gapMs) ?
+        "session-mono session-gap-long"
+      : "session-mono session-gap"
+    const trace = escapeHtml(event.trace_id)
+    return `${divider}<tr class="session-event-row">
+<td><span class="session-dot" aria-hidden="true" style="background:${creatorColor(event.model)}"></span>${escapeHtml(event.model)}</td>
+<td class="session-mono" title="${escapeHtml(new Date(event.created_at_ms).toLocaleString())}">${escapeHtml(formatClock(event.created_at_ms, { seconds: true }))}</td>
+<td class="${gapClass}">${escapeHtml(formatGap(gapMs))}</td>
+<td class="session-num">${formatInteger(event.input_tokens)}</td>
+<td class="session-num">${formatInteger(event.output_tokens)}</td>
+<td class="session-num">${formatInteger(event.cache_read_input_tokens)}</td>
+<td class="session-num">${formatInteger(event.cache_creation_input_tokens)}</td>
+<td class="session-num session-total">${formatInteger(event.total_tokens)}</td>
+<td class="session-num session-event-cost">${formatCostList(event.cost ? [event.cost] : null)}</td>
+<td><button type="button" class="session-trace" title="Copy trace id" data-session-action="copy-trace" data-trace-id="${trace}">${trace}</button></td>
+</tr>`
+  })
+  return `<tbody class="session-events-body"><tr class="session-events-subheader">${header}</tr>${rows.join("")}</tbody>`
+}
+
+/**
+ * An open session's expansion: head line, event table and footer.
+ * @param {TokenUsageSession} session
+ * @param {SessionExpansion} entry
+ * @param {{ nowMs: number }} options
+ * @returns {string}
+ */
+export function renderSessionExpansion(session, entry, { nowMs }) {
+  const label = session.sessionless ? "No session id · trace" : "Session"
+  const multiDay = !isSameDay(session.first_ms, session.last_ms)
+  const table =
+    entry.items.length > 0 ?
+      `<div class="session-events-wrap"><table class="session-events-table">${renderEventRows(entry.items, { multiDay, nowMs })}</table></div>`
+    : ""
+  return `<div class="session-head">${label} <code class="session-full-key">${escapeHtml(session.key)}</code> <span class="session-head-endpoints">${escapeHtml(session.endpoints.join(", "))}</span></div>${table}${renderEventsFooter(entry)}`
 }

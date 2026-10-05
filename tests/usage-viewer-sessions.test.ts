@@ -3,6 +3,8 @@ import { Window } from "happy-dom"
 
 import type {
   TokenUsageSession,
+  TokenUsageSessionEventRecord,
+  TokenUsageSessionEventsPage,
   TokenUsageSessionsPage,
 } from "~/lib/token-usage"
 
@@ -11,8 +13,11 @@ import {
   LONG_GAP_MS,
   SESSION_EVENTS_LIMIT,
   SESSIONS_PAGE_SIZE,
+  applySessionEvents,
+  applySessionEventsError,
   applySessionsError,
   applySessionsPage,
+  buildSessionEventsUrl,
   buildSessionsUrl,
   createSessionsState,
   creatorColor,
@@ -25,22 +30,30 @@ import {
   formatCostList,
   formatDayLabel,
   formatDuration,
+  formatGap,
   formatInteger,
   formatShortKey,
   identityOf,
+  isLongGap,
   isSameDay,
   modelCreator,
   formatPercent,
   spanGeometry,
   pluralize,
   readViewParam,
+  renderEventRows,
+  renderEventsFooter,
   renderSessionCard,
+  renderSessionExpansion,
   renderSessionsBody,
   renderSessionsMeta,
   renderSessionsPager,
   renderSessionsTabs,
+  retryEvents,
   setView,
+  showMoreEvents,
   startSessionsLoad,
+  toggleSession,
   writeViewParam,
 } from "../pages/usage-viewer/sessions.js"
 
@@ -1388,5 +1401,658 @@ describe("missing endpoint fallback", () => {
     }).state
 
     expect(renderSessionsTabs(missing, { eventsCount: 3 })).toBe("")
+  })
+})
+
+describe("session events URL", () => {
+  const base = "http://localhost:4141/token-usage"
+
+  test("sends session_id for a session and omits null model and before", () => {
+    const url = new URL(
+      buildSessionEventsUrl(base, {
+        before: null,
+        key: "abc",
+        limit: 50,
+        model: null,
+        period: "last_7_days",
+        sessionless: false,
+      }),
+    )
+
+    expect(url.pathname).toBe("/token-usage/session-events")
+    expect(Object.fromEntries(url.searchParams)).toEqual({
+      limit: "50",
+      period: "last_7_days",
+      session_id: "abc",
+    })
+  })
+
+  test("sends trace_id when sessionless, with model and cursor", () => {
+    const url = new URL(
+      buildSessionEventsUrl(`${base}/?x=1`, {
+        before: "1700:9",
+        key: "tr 1",
+        limit: 50,
+        model: "gpt-5",
+        period: "today",
+        sessionless: true,
+      }),
+    )
+
+    expect(Object.fromEntries(url.searchParams)).toEqual({
+      before: "1700:9",
+      limit: "50",
+      model: "gpt-5",
+      period: "today",
+      trace_id: "tr 1",
+    })
+  })
+})
+
+describe("gap formatters", () => {
+  test("formatGap follows the spec examples and floor boundaries", () => {
+    expect(formatGap(null)).toBe("—")
+    expect(formatGap(0)).toBe("+0s")
+    expect(formatGap(42_900)).toBe("+42s")
+    expect(formatGap(59_999)).toBe("+59s")
+    expect(formatGap(60_000)).toBe("+1m")
+    expect(formatGap(185_000)).toBe("+3m 5s")
+    expect(formatGap(180_000)).toBe("+3m")
+    expect(formatGap(HOUR - 1)).toBe("+59m 59s")
+    expect(formatGap(HOUR)).toBe("+1h")
+    expect(formatGap(HOUR + 20 * MINUTE)).toBe("+1h 20m")
+    expect(formatGap(2 * DAY + 3 * HOUR)).toBe("+2d 3h")
+    expect(formatGap(-5)).toBe("+0s")
+  })
+
+  test("isLongGap is true from 15 minutes and false for null", () => {
+    expect(isLongGap(null)).toBe(false)
+    expect(isLongGap(LONG_GAP_MS - 1)).toBe(false)
+    expect(isLongGap(LONG_GAP_MS)).toBe(true)
+  })
+})
+
+function eventOf(
+  overrides: Partial<TokenUsageSessionEventRecord> = {},
+): TokenUsageSessionEventRecord {
+  return {
+    cache_creation_input_tokens: 4,
+    cache_read_input_tokens: 3,
+    cost: null,
+    created_at_ms: at(2026, 9, 29, 21, 41, 7),
+    created_at_utc: "",
+    endpoint: "messages",
+    id: 1,
+    input_tokens: 1_000,
+    model: "claude-opus-4",
+    output_tokens: 2,
+    prev_ms: null,
+    provider_name: null,
+    session_id: "s",
+    source: "copilot",
+    total_nano_aiu: null,
+    total_tokens: 1_009,
+    trace_id: "trace-1",
+    user_id: "u",
+    ...overrides,
+  } as TokenUsageSessionEventRecord
+}
+
+function eventsPageOf(
+  overrides: Partial<TokenUsageSessionEventsPage> = {},
+): TokenUsageSessionEventsPage {
+  return {
+    has_more: false,
+    items: [eventOf()],
+    model: null,
+    next_cursor: null,
+    period: "today",
+    range: sessionsPageOf().range,
+    session_id: "1a2b3c4d-5e6f-7a8b",
+    total: 1,
+    trace_id: null,
+    ...overrides,
+  }
+}
+
+const SESSION = { key: "1a2b3c4d-5e6f-7a8b", sessionless: false }
+const SESSION_ID = identityOf(SESSION)
+
+function expandedState() {
+  return toggleSession(loadedState("sessions"), SESSION)
+}
+
+describe("session expansion transitions", () => {
+  test("expanding opens the card at once and requests the newest events", () => {
+    const { requests, state } = expandedState()
+    const entry = state.expanded[SESSION_ID]
+
+    expect(requests).toEqual([
+      {
+        before: null,
+        identity: SESSION_ID,
+        key: SESSION.key,
+        kind: "session-events",
+        limit: 50,
+        mode: "replace",
+        model: null,
+        requestId: requests[0].requestId,
+        sessionless: false,
+      },
+    ])
+    expect(entry.loading).toBe(true)
+    expect(entry.items).toEqual([])
+    expect(entry.requestId).toBe(requests[0].requestId)
+  })
+
+  test("collapsing discards the entry, so re-expanding starts fresh", () => {
+    const opened = expandedState().state
+    const loaded = applySessionEvents(opened, {
+      identity: SESSION_ID,
+      page: eventsPageOf(),
+      requestId: opened.expanded[SESSION_ID].requestId!,
+    }).state
+
+    const closed = toggleSession(loaded, SESSION)
+    expect(closed.requests).toEqual([])
+    expect(closed.state.expanded).toEqual({})
+
+    const reopened = toggleSession(closed.state, SESSION)
+    expect(reopened.state.expanded[SESSION_ID].items).toEqual([])
+    expect(reopened.requests).toHaveLength(1)
+  })
+
+  test("several sessions open independently and a trace twin is separate", () => {
+    let state = loadedState("sessions")
+    state = toggleSession(state, SESSION).state
+    state = toggleSession(state, { key: SESSION.key, sessionless: true }).state
+
+    expect(Object.keys(state.expanded).toSorted()).toEqual([
+      `s:${SESSION.key}`,
+      `t:${SESSION.key}`,
+    ])
+  })
+
+  test("a response fills the entry and a later one is dropped as stale", () => {
+    const opened = expandedState()
+    const { requestId } = opened.requests[0]
+    const applied = applySessionEvents(opened.state, {
+      identity: SESSION_ID,
+      page: eventsPageOf({ has_more: true, next_cursor: "5:5", total: 120 }),
+      requestId,
+    })
+    const entry = applied.state.expanded[SESSION_ID]
+
+    expect(entry).toMatchObject({
+      hasMore: true,
+      loading: false,
+      nextCursor: "5:5",
+      total: 120,
+    })
+    expect(entry.items).toHaveLength(1)
+
+    const stale = applySessionEvents(applied.state, {
+      identity: SESSION_ID,
+      page: eventsPageOf({ items: [eventOf({ id: 2 }), eventOf({ id: 3 })] }),
+      requestId: requestId + 99,
+    })
+    expect(stale.state).toBe(applied.state)
+  })
+
+  test("a response for a collapsed session is dropped", () => {
+    const opened = expandedState()
+    const closed = toggleSession(opened.state, SESSION).state
+
+    const result = applySessionEvents(closed, {
+      identity: SESSION_ID,
+      page: eventsPageOf(),
+      requestId: opened.requests[0].requestId,
+    })
+    expect(result.state).toBe(closed)
+    expect(
+      applySessionEventsError(closed, {
+        identity: SESSION_ID,
+        message: "x",
+        requestId: opened.requests[0].requestId,
+      }).state,
+    ).toBe(closed)
+  })
+
+  test("collapse and re-expand mid-load never duplicates rows", () => {
+    const first = expandedState()
+    const closed = toggleSession(first.state, SESSION).state
+    const second = toggleSession(closed, SESSION)
+
+    const late = applySessionEvents(second.state, {
+      identity: SESSION_ID,
+      page: eventsPageOf(),
+      requestId: first.requests[0].requestId,
+    })
+    expect(late.state.expanded[SESSION_ID].items).toEqual([])
+
+    const fresh = applySessionEvents(late.state, {
+      identity: SESSION_ID,
+      page: eventsPageOf(),
+      requestId: second.requests[0].requestId,
+    })
+    expect(fresh.state.expanded[SESSION_ID].items).toHaveLength(1)
+  })
+
+  test("Show more appends by cursor and keeps the rows loaded", () => {
+    const opened = expandedState()
+    const loaded = applySessionEvents(opened.state, {
+      identity: SESSION_ID,
+      page: eventsPageOf({ has_more: true, next_cursor: "5:5", total: 2 }),
+      requestId: opened.requests[0].requestId,
+    }).state
+
+    const more = showMoreEvents(loaded, SESSION_ID)
+    expect(more.requests[0]).toMatchObject({ before: "5:5", mode: "append" })
+    expect(more.state.expanded[SESSION_ID].loading).toBe(true)
+    expect(more.state.expanded[SESSION_ID].items).toHaveLength(1)
+
+    const done = applySessionEvents(more.state, {
+      identity: SESSION_ID,
+      page: eventsPageOf({ items: [eventOf({ id: 2 })], total: 2 }),
+      requestId: more.requests[0].requestId,
+    }).state.expanded[SESSION_ID]
+    expect(done.items.map((item) => item.id)).toEqual([1, 2])
+    expect(done.hasMore).toBe(false)
+  })
+
+  test("Show more does nothing while loading, at the end or when collapsed", () => {
+    const opened = expandedState()
+    expect(showMoreEvents(opened.state, SESSION_ID).requests).toEqual([])
+
+    const loaded = applySessionEvents(opened.state, {
+      identity: SESSION_ID,
+      page: eventsPageOf(),
+      requestId: opened.requests[0].requestId,
+    }).state
+    expect(showMoreEvents(loaded, SESSION_ID).requests).toEqual([])
+    expect(showMoreEvents(loaded, "s:other").requests).toEqual([])
+  })
+
+  test("an error keeps the rows and Retry repeats the same request", () => {
+    const opened = expandedState()
+    const loaded = applySessionEvents(opened.state, {
+      identity: SESSION_ID,
+      page: eventsPageOf({ has_more: true, next_cursor: "5:5", total: 2 }),
+      requestId: opened.requests[0].requestId,
+    }).state
+    const more = showMoreEvents(loaded, SESSION_ID)
+    const failed = applySessionEventsError(more.state, {
+      identity: SESSION_ID,
+      message: "boom",
+      requestId: more.requests[0].requestId,
+    }).state
+    const entry = failed.expanded[SESSION_ID]
+
+    expect(entry.error).toBe("boom")
+    expect(entry.loading).toBe(false)
+    expect(entry.items).toHaveLength(1)
+
+    const retry = retryEvents(failed, SESSION_ID)
+    expect(retry.requests[0]).toMatchObject({ before: "5:5", mode: "append" })
+    expect(retry.requests[0].requestId).toBeGreaterThan(
+      more.requests[0].requestId,
+    )
+    expect(retry.state.expanded[SESSION_ID]).toMatchObject({
+      error: null,
+      loading: true,
+    })
+  })
+
+  test("a failed first load retries as a replace; Retry without an error is a no-op", () => {
+    const opened = expandedState()
+    const failed = applySessionEventsError(opened.state, {
+      identity: SESSION_ID,
+      message: "down",
+      requestId: opened.requests[0].requestId,
+    }).state
+
+    expect(retryEvents(failed, SESSION_ID).requests[0]).toMatchObject({
+      before: null,
+      mode: "replace",
+    })
+    expect(retryEvents(opened.state, SESSION_ID).requests).toEqual([])
+    expect(retryEvents(failed, "s:none").requests).toEqual([])
+  })
+
+  test("a stale error response is dropped", () => {
+    const opened = expandedState()
+    const result = applySessionEventsError(opened.state, {
+      identity: SESSION_ID,
+      message: "late",
+      requestId: opened.requests[0].requestId + 5,
+    })
+    expect(result.state).toBe(opened.state)
+  })
+
+  test("paging the sessions list collapses every open session", () => {
+    const opened = expandedState().state
+    const paged = startSessionsLoad(opened, { page: 2, reason: "page" })
+    const landed = applySessionsPage(paged.state, {
+      page: sessionsPageOf({ page: 2, total: 40, total_pages: 2 }),
+      requestId: paged.requests[0].requestId,
+    })
+    expect(landed.state.expanded).toEqual({})
+
+    const refreshed = startSessionsLoad(opened, { page: 1, reason: "refresh" })
+    const kept = applySessionsPage(refreshed.state, {
+      page: sessionsPageOf(),
+      requestId: refreshed.requests[0].requestId,
+    })
+    expect(Object.keys(kept.state.expanded)).toEqual([SESSION_ID])
+  })
+})
+
+describe("renderEventsFooter", () => {
+  const base = expandedState().state.expanded[SESSION_ID]
+  const footer = (overrides: Partial<typeof base>) =>
+    parse(renderEventsFooter({ ...base, ...overrides }))
+
+  test("loading", () => {
+    expect(footer({}).textContent).toBe("Loading events...")
+  })
+
+  test("error shows an alert and a Retry button that names the session", () => {
+    const root = footer({ error: "boom <b>", loading: false })
+    const alert = root.querySelector('[role="alert"]')
+    const retry = root.querySelector('button[data-session-action="retry"]')
+
+    expect(alert?.textContent).toBe("boom <b>")
+    expect(root.querySelector("b")).toBeNull()
+    expect(retry?.textContent).toBe("Retry")
+    expect(retry?.getAttribute("type")).toBe("button")
+    expect(retry?.getAttribute("data-session-key")).toBe(SESSION.key)
+    expect(retry?.getAttribute("data-session-sessionless")).toBe("false")
+  })
+
+  test("an empty period", () => {
+    expect(footer({ loading: false }).textContent).toBe(
+      "No events in this period.",
+    )
+  })
+
+  test("Show N more caps at 50 and Showing X of Y", () => {
+    const root = footer({
+      hasMore: true,
+      items: [eventOf(), eventOf()],
+      loading: false,
+      total: 200,
+    })
+    expect(
+      root.querySelector('[data-session-action="more"]')?.textContent,
+    ).toBe("Show 50 more")
+    expect(root.textContent).toContain("Showing 2 of 200 events")
+  })
+
+  test("Show N more is the remainder when under 50, and singular event", () => {
+    const some = footer({
+      hasMore: true,
+      items: [eventOf()],
+      loading: false,
+      total: 11,
+    })
+    expect(
+      some.querySelector('[data-session-action="more"]')?.textContent,
+    ).toBe("Show 10 more")
+
+    const one = footer({ items: [eventOf()], loading: false, total: 1 })
+    expect(one.querySelector("button")).toBeNull()
+    expect(one.textContent).toBe("Showing 1 of 1 event")
+  })
+})
+
+describe("renderEventRows", () => {
+  const options = { multiDay: false, nowMs: NOW }
+
+  test("single-model sub-header and one row per event", () => {
+    const root = parse(
+      `<table>${renderEventRows(
+        [
+          eventOf({ prev_ms: null }),
+          eventOf({
+            created_at_ms: at(2026, 9, 29, 22, 0, 7),
+            id: 2,
+            prev_ms: at(2026, 9, 29, 21, 41, 7),
+          }),
+        ],
+        options,
+      )}</table>`,
+    )
+    const heads = [...root.querySelectorAll("th")].map((th) => th.textContent)
+    const rows = [...root.querySelectorAll("tr.session-event-row")]
+
+    expect(heads).toEqual([
+      "Model",
+      "Time",
+      "Gap",
+      "Input",
+      "Output",
+      "Cache Read",
+      "Cache Write",
+      "Total",
+      "Cost",
+      "Trace",
+    ])
+    expect(rows).toHaveLength(2)
+    expect(rows.every((row) => row.children.length === 10)).toBe(true)
+    expect(rows[0].children[1].textContent).toBe("9:41:07 PM")
+    expect(rows[0].children[2].textContent).toBe("—")
+    expect(rows[1].children[2].textContent).toBe("+19m")
+    expect(rows[1].children[2].className).toContain("session-gap-long")
+    expect(rows[0].children[2].className).not.toContain("session-gap-long")
+  })
+
+  test("cells show the four token fields, total, cost and an escaped trace button", () => {
+    const root = parse(
+      `<table>${renderEventRows(
+        [
+          eventOf({
+            cost: {
+              amount: 1.2,
+              currency: "USD",
+              source: "x",
+              total_cost_nanos: 1,
+            },
+            input_tokens: 1234,
+            model: "<m>",
+            trace_id: "t<1>",
+          }),
+          eventOf({ id: 2 }),
+        ],
+        options,
+      )}</table>`,
+    )
+    const [first, second] = [...root.querySelectorAll("tr.session-event-row")]
+    const cells = [...first.children].map((cell) => cell.textContent)
+
+    expect(cells[0]).toBe("<m>")
+    expect(cells.slice(3, 9)).toEqual([
+      "1,234",
+      "2",
+      "3",
+      "4",
+      "1,009",
+      "$1.20",
+    ])
+    expect(second.children[8].textContent).toBe("—")
+    const trace = first.querySelector("button")
+    expect(trace?.getAttribute("type")).toBe("button")
+    expect(trace?.getAttribute("title")).toBe("Copy trace id")
+    expect(trace?.textContent).toBe("t<1>")
+  })
+
+  test("the model dot takes the model's creator colour", () => {
+    const root = parse(
+      `<table>${renderEventRows([eventOf({ model: "claude-opus-4" }), eventOf({ id: 2, model: "gpt-5" })], options)}</table>`,
+    )
+    const dots = [...root.querySelectorAll(".session-dot")].map((dot) =>
+      dot.getAttribute("style"),
+    )
+
+    expect(dots).toEqual([
+      `background:${creatorColor("claude-opus-4")}`,
+      `background:${creatorColor("gpt-5")}`,
+    ])
+    expect(dots[0]).not.toBe(dots[1])
+  })
+
+  test("no day dividers in a single-day session", () => {
+    const html = renderEventRows([eventOf()], options)
+    expect(html).not.toContain("session-day-row")
+  })
+
+  test("multi-day sessions get a divider before the first row and each date change", () => {
+    const root = parse(
+      `<table>${renderEventRows(
+        [
+          eventOf({ created_at_ms: at(2026, 9, 29, 1, 0), id: 3 }),
+          eventOf({ created_at_ms: at(2026, 9, 29, 0, 30), id: 2 }),
+          eventOf({ created_at_ms: at(2026, 9, 28, 23, 0), id: 1 }),
+        ],
+        { multiDay: true, nowMs: NOW },
+      )}</table>`,
+    )
+    const rows = [...root.querySelectorAll("tbody > tr")].map(
+      (row) => row.className,
+    )
+    const dividers = [...root.querySelectorAll("tr.session-day-row")]
+
+    expect(rows).toEqual([
+      "session-events-subheader",
+      "session-day-row",
+      "session-event-row",
+      "session-event-row",
+      "session-day-row",
+      "session-event-row",
+    ])
+    expect(dividers.map((row) => row.textContent)).toEqual(["Sep 29", "Sep 28"])
+    const cell = dividers[0].querySelector("td")
+    expect(cell?.getAttribute("colspan")).toBe("10")
+    expect(cell?.querySelector("span.session-day-label")?.textContent).toBe(
+      "Sep 29",
+    )
+  })
+})
+
+describe("renderSessionExpansion and the expanded card", () => {
+  const session = sessionOf({ endpoints: ["messages", "responses"] })
+
+  function loadedEntry(items = [eventOf()], total = items.length) {
+    const opened = toggleSession(loadedState("sessions"), session)
+    return applySessionEvents(opened.state, {
+      identity: identityOf(session),
+      page: eventsPageOf({ items, total }),
+      requestId: opened.requests[0].requestId,
+    }).state.expanded[identityOf(session)]
+  }
+
+  test("head line: label, full key in code and endpoints", () => {
+    const root = parse(
+      renderSessionExpansion(session, loadedEntry(), { nowMs: NOW }),
+    )
+
+    expect(root.querySelector(".session-head")?.textContent).toContain(
+      "Session ",
+    )
+    expect(root.querySelector("code")?.textContent).toBe(session.key)
+    expect(root.querySelector(".session-head-endpoints")?.textContent).toBe(
+      "messages, responses",
+    )
+    expect(root.querySelectorAll("table")).toHaveLength(1)
+  })
+
+  test("sessionless head line says so", () => {
+    const sessionless = sessionOf({ sessionless: true })
+    const opened = toggleSession(loadedState("sessions"), sessionless)
+    const root = parse(
+      renderSessionExpansion(
+        sessionless,
+        opened.state.expanded[identityOf(sessionless)],
+        { nowMs: NOW },
+      ),
+    )
+    expect(root.querySelector(".session-head")?.textContent).toContain(
+      "No session id · trace",
+    )
+  })
+
+  test("no table while there are no rows, only the loading footer", () => {
+    const opened = toggleSession(loadedState("sessions"), session)
+    const root = parse(
+      renderSessionExpansion(
+        session,
+        opened.state.expanded[identityOf(session)],
+        { nowMs: NOW },
+      ),
+    )
+    expect(root.querySelector("table")).toBeNull()
+    expect(root.textContent).toContain("Loading events...")
+  })
+
+  test("a session spanning two dates renders day dividers", () => {
+    const multi = sessionOf({
+      first_ms: at(2026, 9, 28, 23, 0),
+      last_ms: at(2026, 9, 29, 1, 0),
+    })
+    const opened = toggleSession(loadedState("sessions"), multi)
+    const entry = applySessionEvents(opened.state, {
+      identity: identityOf(multi),
+      page: eventsPageOf(),
+      requestId: opened.requests[0].requestId,
+    }).state.expanded[identityOf(multi)]
+
+    expect(
+      parse(
+        renderSessionExpansion(multi, entry, { nowMs: NOW }),
+      ).querySelectorAll(".session-day-row"),
+    ).toHaveLength(1)
+  })
+
+  test("the card is collapsed and hidden without an entry, open with one", () => {
+    const closed = parse(renderSessionCard(session, { index: 0, nowMs: NOW }))
+    expect(closed.querySelector("article")?.getAttribute("data-expanded")).toBe(
+      "false",
+    )
+    expect(
+      closed.querySelector("#session-panel-0")?.hasAttribute("hidden"),
+    ).toBe(true)
+    expect(closed.querySelector("#session-panel-0")?.innerHTML).toBe("")
+
+    const open = parse(
+      renderSessionCard(session, {
+        expansion: loadedEntry(),
+        index: 0,
+        nowMs: NOW,
+      }),
+    )
+    const header = open.querySelector(".session-card-header")
+    const region = open.querySelector("#session-panel-0")
+
+    expect(open.querySelector("article")?.getAttribute("data-expanded")).toBe(
+      "true",
+    )
+    expect(header?.getAttribute("aria-expanded")).toBe("true")
+    expect(region?.hasAttribute("hidden")).toBe(false)
+    expect(region?.querySelector("table")).not.toBeNull()
+  })
+
+  test("the sessions body expands only the open session's card", () => {
+    const state = toggleSession(loadedState("sessions"), session).state
+    const root = parse(
+      renderSessionsBody(state, {
+        eventsBody: "",
+        nowMs: NOW,
+        renderEmptyState: (message) => `<p>${message}</p>`,
+        renderError: (message) => `<p>${message}</p>`,
+      }),
+    )
+    expect(root.querySelector("article")?.getAttribute("data-expanded")).toBe(
+      "true",
+    )
+    expect(root.textContent).toContain("Loading events...")
   })
 })
