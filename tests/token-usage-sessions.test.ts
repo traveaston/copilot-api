@@ -11,8 +11,10 @@ import { Hono } from "hono"
 import {
   closeUsageStore,
   createEmptyEventsPage,
+  createEmptySessionEventsPage,
   createEmptySessionsPage,
   type TokenUsageSession,
+  type TokenUsageSessionEventsPage,
   type TokenUsageSessionsPage,
   type TokenUsageSummary,
 } from "~/lib/token-usage"
@@ -150,6 +152,41 @@ describe("empty builders", () => {
       total_pages: 1,
     })
     expect(page.range.end_ms).toBe(NOW.getTime() + 1)
+  })
+
+  test("createEmptySessionEventsPage echoes the key, the filter and the period", () => {
+    const page = createEmptySessionEventsPage({
+      before: { createdAtMs: 1, id: 1 },
+      key: { trace_id: "t" },
+      limit: 500,
+      model: "m",
+      period: "today",
+    })
+    expect(page).toEqual({
+      has_more: false,
+      items: [],
+      model: "m",
+      next_cursor: null,
+      period: "today",
+      range: {
+        end_ms: NOW.getTime() + 1,
+        end_utc: new Date(NOW.getTime() + 1).toISOString(),
+        start_ms: new Date(2026, 5, 15).getTime(),
+        start_utc: new Date(2026, 5, 15).toISOString(),
+      },
+      session_id: null,
+      total: 0,
+      trace_id: "t",
+    })
+    expect(
+      createEmptySessionEventsPage({
+        before: null,
+        key: { session_id: "s" },
+        limit: 50,
+        model: null,
+        period: "lifetime",
+      }),
+    ).toMatchObject({ model: null, session_id: "s", trace_id: null })
   })
 
   test("createEmptyEventsPage is exported", () => {
@@ -398,4 +435,252 @@ describe("sessions reconcile with the summary", () => {
       expect(totals.request_count).toBe(period === "today" ? 7 : 8)
     },
   )
+})
+
+async function fetchSessionEvents(
+  query: string,
+): Promise<TokenUsageSessionEventsPage> {
+  const response = await createTokenUsageApp().request(
+    `/token-usage/session-events?${query}`,
+  )
+  expect(response.status).toBe(200)
+  return (await response.json()) as TokenUsageSessionEventsPage
+}
+
+describe("session events", () => {
+  test("lists one session's events newest first and echoes the key", async () => {
+    seed(
+      persistedEvent({ created_at_ms: ago(30), session_id: "s", model: "a" }),
+      persistedEvent({ created_at_ms: ago(20), session_id: "other" }),
+      persistedEvent({ created_at_ms: ago(10), session_id: "s", model: "b" }),
+    )
+
+    const body = await fetchSessionEvents("period=today&session_id=s")
+
+    expect(body.items.map((e) => [e.created_at_ms, e.model])).toEqual([
+      [ago(10), "b"],
+      [ago(30), "a"],
+    ])
+    expect(body).toMatchObject({
+      has_more: false,
+      model: null,
+      next_cursor: null,
+      period: "today",
+      session_id: "s",
+      total: 2,
+      trace_id: null,
+    })
+    expect(body.range.end_ms).toBe(NOW.getTime() + 1)
+  })
+
+  test("a trace id key lists only that trace's sessionless events", async () => {
+    seed(
+      persistedEvent({ created_at_ms: ago(30), trace_id: "t" }),
+      persistedEvent({
+        created_at_ms: ago(20),
+        session_id: "x",
+        trace_id: "t",
+      }),
+      persistedEvent({ created_at_ms: ago(10), trace_id: "t" }),
+      persistedEvent({ created_at_ms: ago(5), trace_id: "other" }),
+    )
+
+    const body = await fetchSessionEvents("period=today&trace_id=t")
+
+    expect(body.items.map((e) => [e.created_at_ms, e.session_id])).toEqual([
+      [ago(10), ""],
+      [ago(30), ""],
+    ])
+    expect(body).toMatchObject({ session_id: null, total: 2, trace_id: "t" })
+  })
+
+  test("prev_ms is the previous in-period event, null for the first even when the session began before the period", async () => {
+    const todayStart = new Date(2026, 5, 15).getTime()
+    seed(
+      persistedEvent({ created_at_ms: todayStart - MIN, session_id: "s" }),
+      persistedEvent({ created_at_ms: todayStart, session_id: "s" }),
+      persistedEvent({ created_at_ms: todayStart + 5 * MIN, session_id: "s" }),
+    )
+
+    const body = await fetchSessionEvents("period=today&session_id=s")
+
+    expect(body.items.map((e) => [e.created_at_ms, e.prev_ms])).toEqual([
+      [todayStart + 5 * MIN, todayStart],
+      [todayStart, null],
+    ])
+    expect(body.total).toBe(2)
+  })
+
+  test("cursor paging ignores newer inserts and neither repeats nor drops rows", async () => {
+    // ids 1..60 from ago(60) to ago(1)
+    seed(
+      ...Array.from({ length: 60 }, (_, i) =>
+        persistedEvent({ created_at_ms: ago(60 - i), session_id: "s" }),
+      ),
+    )
+
+    const first = await fetchSessionEvents("period=today&session_id=s&limit=50")
+    expect(first.items).toHaveLength(50)
+    expect(first).toMatchObject({
+      has_more: true,
+      next_cursor: `${ago(50)}:11`,
+      total: 60,
+    })
+    expect(first.items.at(-1)?.prev_ms).toBe(ago(51))
+
+    seed(persistedEvent({ created_at_ms: ago(0), session_id: "s" }))
+    const second = await fetchSessionEvents(
+      `period=today&session_id=s&limit=50&before=${first.next_cursor}`,
+    )
+
+    expect(second.items.map((e) => e.created_at_ms)).toEqual(
+      Array.from({ length: 10 }, (_, i) => ago(51 + i)),
+    )
+    expect(second).toMatchObject({
+      has_more: false,
+      next_cursor: null,
+      total: 61,
+    })
+    expect(second.items[0].prev_ms).toBe(ago(52))
+    expect(second.items.at(-1)?.prev_ms).toBeNull()
+    const ids = [...first.items, ...second.items].map((e) => e.id)
+    expect(new Set(ids).size).toBe(60)
+  })
+
+  test("a cursor between rows sharing a timestamp breaks the tie by id", async () => {
+    seed(
+      ...[1, 2, 3].map(() =>
+        persistedEvent({ created_at_ms: ago(5), session_id: "s" }),
+      ),
+    )
+
+    const first = await fetchSessionEvents("period=today&session_id=s&limit=2")
+    const second = await fetchSessionEvents(
+      `period=today&session_id=s&limit=2&before=${first.next_cursor}`,
+    )
+
+    expect(first.items.map((e) => e.id)).toEqual([3, 2])
+    expect(first.next_cursor).toBe(`${ago(5)}:2`)
+    expect(second.items.map((e) => e.id)).toEqual([1])
+  })
+
+  test("a model filter matches exactly, echoes, and its gaps skip other models' events", async () => {
+    seed(
+      persistedEvent({ created_at_ms: ago(30), model: "a", session_id: "s" }),
+      persistedEvent({ created_at_ms: ago(20), model: "b", session_id: "s" }),
+      persistedEvent({
+        created_at_ms: ago(15),
+        model: "a-mini",
+        session_id: "s",
+      }),
+      persistedEvent({ created_at_ms: ago(10), model: "a", session_id: "s" }),
+    )
+
+    const filtered = await fetchSessionEvents(
+      "period=today&session_id=s&model=a",
+    )
+
+    expect(filtered.items.map((e) => [e.created_at_ms, e.prev_ms])).toEqual([
+      [ago(10), ago(30)],
+      [ago(30), null],
+    ])
+    expect(filtered).toMatchObject({ model: "a", total: 2 })
+
+    const unfiltered = await fetchSessionEvents(
+      "period=today&session_id=s&model=",
+    )
+    expect(unfiltered).toMatchObject({ model: null, total: 4 })
+    expect(unfiltered.items[0].prev_ms).toBe(ago(15))
+  })
+})
+
+describe("session events validation", () => {
+  async function expectBadRequest(query: string): Promise<void> {
+    const response = await createTokenUsageApp().request(
+      `/token-usage/session-events?${query}`,
+    )
+    expect(response.status).toBe(400)
+    expect(await response.json()).toEqual({
+      error: { message: expect.any(String) as string },
+    })
+  }
+
+  test.each([
+    ["neither key", "period=today"],
+    ["both keys", "session_id=a&trace_id=b"],
+    ["both keys, one empty", "session_id=a&trace_id="],
+    ["an empty session_id", "session_id="],
+    ["an empty trace_id", "trace_id="],
+  ])("%s is a 400", async (_, query) => {
+    await expectBadRequest(query)
+  })
+
+  test.each([
+    "abc",
+    "1:",
+    ":1",
+    "1:2:3",
+    "-1:2",
+    "1.5:2",
+    "9007199254740992:1",
+    "1:9007199254740992",
+  ])("before=%s is a 400", async (before) => {
+    await expectBadRequest(`session_id=s&before=${encodeURIComponent(before)}`)
+  })
+
+  test("an empty before is treated as absent", async () => {
+    seed(persistedEvent({ session_id: "s" }))
+
+    const body = await fetchSessionEvents("period=today&session_id=s&before=")
+
+    expect(body).toMatchObject({ has_more: false, total: 1 })
+    expect(body.items).toHaveLength(1)
+  })
+
+  test("limit is capped at 100 and falls back to 50", async () => {
+    seed(
+      ...Array.from({ length: 101 }, (_, i) =>
+        persistedEvent({ created_at_ms: ago(101 - i), session_id: "s" }),
+      ),
+    )
+
+    for (const [limit, length] of [
+      ["500", 100],
+      ["x", 50],
+      ["0", 50],
+      ["7", 7],
+    ] as const) {
+      const body = await fetchSessionEvents(
+        `period=today&session_id=s&limit=${limit}`,
+      )
+      expect(body.items).toHaveLength(length)
+      expect(body.has_more).toBe(true)
+    }
+  })
+
+  test.each([
+    ["an unknown key", "session_id=nope"],
+    ["a filter matching nothing", "session_id=s&model=nope"],
+  ])("%s returns an empty page", async (_, query) => {
+    seed(persistedEvent({ session_id: "s" }))
+
+    const body = await fetchSessionEvents(`period=today&${query}`)
+
+    expect(body).toMatchObject({
+      has_more: false,
+      items: [],
+      next_cursor: null,
+      total: 0,
+    })
+  })
+
+  test("the largest safe-integer cursor is accepted", async () => {
+    seed(persistedEvent({ session_id: "s" }))
+
+    const body = await fetchSessionEvents(
+      "period=today&session_id=s&before=9007199254740991:9007199254740991",
+    )
+
+    expect(body.items).toHaveLength(1)
+  })
 })
