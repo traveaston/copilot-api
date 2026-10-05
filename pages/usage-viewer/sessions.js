@@ -541,14 +541,232 @@ export function renderSessionsPager(state) {
   ].join("")
 }
 
+// --- Creator colours and card bars (ticket 14) ---
+
+/**
+ * Creator rules in match order: the first whose test passes on the lower-cased
+ * last path segment of a model id wins. Every slug has a
+ * `--color-creator-<slug>` token.
+ * @type {ReadonlyArray<{ slug: string, test: (id: string) => boolean }>}
+ */
+const CREATOR_RULES = [
+  {
+    slug: "openai",
+    test: (id) =>
+      id.startsWith("gpt-") || id.startsWith("codex-") || /^o\d+(-|$)/.test(id),
+  },
+  { slug: "anthropic", test: (id) => id.startsWith("claude-") },
+  { slug: "google", test: (id) => id.startsWith("gemini-") },
+  { slug: "xai", test: (id) => id.startsWith("grok-") },
+  { slug: "microsoft-ai", test: (id) => id.startsWith("mai-") },
+  { slug: "kimi", test: (id) => id.startsWith("kimi-") },
+]
+
+/**
+ * The creator slug of a model id; `other` when no rule matches.
+ * @param {string} model
+ * @returns {string}
+ */
+export function modelCreator(model) {
+  const id = model.slice(model.lastIndexOf("/") + 1).toLowerCase()
+  return CREATOR_RULES.find((rule) => rule.test(id))?.slug ?? "other"
+}
+
+/**
+ * The CSS colour for a model: its creator's role token.
+ * @param {string} model
+ * @returns {string}
+ */
+export function creatorColor(model) {
+  return `var(--color-creator-${modelCreator(model)})`
+}
+
+/**
+ * Share as a whole percent: "0%" for a non-positive whole, "<1%" for a
+ * positive share under one percent, otherwise rounded.
+ * @param {number} part
+ * @param {number} whole
+ * @returns {string}
+ */
+export function formatPercent(part, whole) {
+  if (!(whole > 0)) return "0%"
+  const share = part / whole
+  if (share > 0 && share < 0.01) return "<1%"
+  return `${Math.round(share * 100)}%`
+}
+
+/**
+ * Left and width, as 0..1 fractions of the period, of a session's span.
+ * Null when the range is missing, a bound isn't finite, or the period is empty.
+ * @param {number} firstMs
+ * @param {number} lastMs
+ * @param {{ start_ms: number, end_ms: number } | null | undefined} range
+ * @returns {{ left: number, width: number } | null}
+ */
+export function spanGeometry(firstMs, lastMs, range) {
+  if (!range) return null
+  const { start_ms: start, end_ms: end } = range
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null
+  const span = end - start
+  if (!(span > 0)) return null
+  const clamp = (/** @type {number} */ v, /** @type {number} */ max) =>
+    Math.min(Math.max(v, 0), max)
+  const left = clamp((firstMs - start) / span, 1)
+  return { left, width: clamp((lastMs - firstMs) / span, 1 - left) }
+}
+
+/**
+ * @param {number} fraction 0..1
+ * @returns {string}
+ */
+function percentWidth(fraction) {
+  return `${Number((fraction * 100).toFixed(4))}%`
+}
+
+/**
+ * The span track: the session's first-to-last span within the period.
+ * @param {TokenUsageSession} session
+ * @param {{ start_ms: number, end_ms: number } | null | undefined} range
+ * @returns {string}
+ */
+function renderSpanTrack(session, range) {
+  const geometry = spanGeometry(session.first_ms, session.last_ms, range)
+  const span =
+    geometry ?
+      `<span class="session-span" style="left:${percentWidth(geometry.left)};width:${percentWidth(geometry.width)}"></span>`
+    : ""
+  return `<span class="session-track">${span}</span>`
+}
+
+/**
+ * @typedef {object} BarSegment
+ * @property {string} label Tooltip text.
+ * @property {number} fraction Width as a 0..1 share of the bar.
+ * @property {string} color A CSS colour.
+ */
+
+/**
+ * @param {string} className
+ * @param {BarSegment[]} segments
+ * @returns {string}
+ */
+function renderBar(className, segments) {
+  const cells = segments
+    .map(
+      (segment) =>
+        `<span data-bar-segment title="${escapeHtml(segment.label)}" style="width:${percentWidth(segment.fraction)};background:${segment.color}"></span>`,
+    )
+    .join("")
+  return `<span class="session-bar ${className}">${cells}</span>`
+}
+
+/**
+ * @param {string} className
+ * @param {Array<{ color: string, name: string, figure: string, bold?: boolean }>} items
+ * @returns {string}
+ */
+function renderLegend(className, items) {
+  const entries = items
+    .map((item) => {
+      const figure =
+        item.bold ?
+          `<b>${escapeHtml(item.figure)}</b>`
+        : escapeHtml(item.figure)
+      return `<span class="legend-item"><span class="legend-dot" style="background:${item.color}"></span><span class="legend-name">${escapeHtml(item.name)}</span> ${figure}</span>`
+    })
+    .join("")
+  return `<span class="session-legend ${className}">${entries}</span>`
+}
+
+/**
+ * The model share bar and legend; empty when the session has no models.
+ * @param {TokenUsageSession} session
+ * @returns {string}
+ */
+function renderModelMarks(session) {
+  if (session.byModel.length === 0) return ""
+  const whole = session.total_tokens
+  const bar = renderBar(
+    "session-model-bar",
+    session.byModel.map((entry) => ({
+      color: creatorColor(entry.model),
+      fraction: whole > 0 ? Math.max(0, entry.total_tokens / whole) : 0,
+      label: `${entry.model} ${formatPercent(entry.total_tokens, whole)} of tokens`,
+    })),
+  )
+  const legend = renderLegend(
+    "session-model-legend",
+    session.byModel.map((entry) => ({
+      bold: true,
+      color: creatorColor(entry.model),
+      figure: formatInteger(entry.request_count),
+      name: entry.model,
+    })),
+  )
+  return bar + legend
+}
+
+/**
+ * The token bar and legend. Segments are sized by share of the sum of the four
+ * parts, so the bar fills even when `total_tokens` exceeds that sum.
+ * @param {TokenUsageSession} session
+ * @returns {string}
+ */
+function renderTokenMarks(session) {
+  const parts = [
+    {
+      color: "var(--color-series-input)",
+      label: "Input",
+      short: "In",
+      value: session.input_tokens,
+    },
+    {
+      color: "var(--color-series-output)",
+      label: "Output",
+      short: "Out",
+      value: session.output_tokens,
+    },
+    {
+      color: "var(--color-series-cache-read)",
+      label: "Cache read",
+      short: "Cache R",
+      value: session.cache_read_input_tokens,
+    },
+    {
+      color: "var(--color-series-cache-write)",
+      label: "Cache write",
+      short: "Cache W",
+      value: session.cache_creation_input_tokens,
+    },
+  ]
+  const sum = parts.reduce((total, part) => total + part.value, 0)
+  const bar = renderBar(
+    "session-token-bar",
+    parts.map((part) => ({
+      color: part.color,
+      fraction: sum > 0 ? part.value / sum : 0,
+      label: `${part.label} ${formatInteger(part.value)}`,
+    })),
+  )
+  const legend = renderLegend(
+    "session-token-legend",
+    parts.map((part) => ({
+      color: part.color,
+      figure: formatCompact(part.value),
+      name: part.short,
+    })),
+  )
+  return bar + legend
+}
+
 /**
  * One session card: a header button over an expansion region. The region is
  * empty and hidden until a session can expand.
  * @param {TokenUsageSession} session
- * @param {{ expansion?: SessionExpansion, index: number, nowMs: number }} options `index` is the card's 0-based position on the page; `expansion` is the session's open entry, if any.
+ * @param {{ expansion?: SessionExpansion, index: number, nowMs: number, range?: { start_ms: number, end_ms: number } | null }} options `index` is the card's 0-based position on the page; `expansion` is the session's open entry, if any; `range` is the period the span track is placed within.
  * @returns {string}
  */
-export function renderSessionCard(session, { expansion, index, nowMs }) {
+export function renderSessionCard(session, { expansion, index, nowMs, range }) {
   const expanded = expansion !== undefined
   const panelId = `session-panel-${index}`
   const lastActive = new Date(session.last_ms).toLocaleString()
@@ -564,9 +782,12 @@ export function renderSessionCard(session, { expansion, index, nowMs }) {
     </span>
     <span class="session-activity">
       <span class="session-active">Active ${escapeHtml(formatActiveRange(session.first_ms, session.last_ms, nowMs))}</span>
+      ${renderSpanTrack(session, range)}
+      ${renderModelMarks(session)}
     </span>
     <span class="session-tokens">
-      <span class="session-figure">${escapeHtml(formatCompact(session.total_tokens))}</span> <span class="session-tokens-word">tokens</span>
+      <span class="session-tokens-total"><span class="session-figure">${escapeHtml(formatCompact(session.total_tokens))}</span> <span class="session-tokens-word">tokens</span></span>
+      ${renderTokenMarks(session)}
     </span>
     <span class="session-requests">
       <span class="session-figure">${formatInteger(session.request_count)}</span>
@@ -630,6 +851,7 @@ function renderSessionsList(state, { nowMs, renderEmptyState, renderError }) {
         expansion: state.expanded[identityOf(session)],
         index,
         nowMs,
+        range: page.range,
       }),
     )
     .join("")
@@ -945,7 +1167,7 @@ export function renderEventRows(items, { multiDay, nowMs }) {
       : "session-mono session-gap"
     const trace = escapeHtml(event.trace_id)
     return `${divider}<tr class="session-event-row">
-<td><span class="session-dot" aria-hidden="true"></span>${escapeHtml(event.model)}</td>
+<td><span class="session-dot" aria-hidden="true" style="background:${creatorColor(event.model)}"></span>${escapeHtml(event.model)}</td>
 <td class="session-mono" title="${escapeHtml(new Date(event.created_at_ms).toLocaleString())}">${escapeHtml(formatClock(event.created_at_ms, { seconds: true }))}</td>
 <td class="${gapClass}">${escapeHtml(formatGap(gapMs))}</td>
 <td class="session-num">${formatInteger(event.input_tokens)}</td>

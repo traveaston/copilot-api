@@ -20,6 +20,7 @@ import {
   buildSessionEventsUrl,
   buildSessionsUrl,
   createSessionsState,
+  creatorColor,
   escapeHtml,
   formatActiveRange,
   formatAge,
@@ -35,6 +36,9 @@ import {
   identityOf,
   isLongGap,
   isSameDay,
+  modelCreator,
+  formatPercent,
+  spanGeometry,
   pluralize,
   readViewParam,
   renderEventRows,
@@ -328,6 +332,112 @@ describe("formatCostList", () => {
 
   test("escapes a hostile currency code", () => {
     expect(formatCostList([cost("<b>", 1)])).toBe("&lt;B&gt; 1.00")
+  })
+})
+
+describe("modelCreator", () => {
+  const cases: Array<[string, string]> = [
+    ["gpt-6-sol", "openai"],
+    ["gpt-5.3-codex", "openai"],
+    ["codex-mini", "openai"],
+    ["o4-mini", "openai"],
+    ["o3", "openai"],
+    ["claude-sonnet-5.5", "anthropic"],
+    ["gemini-3.8-flash", "google"],
+    ["grok-4.7", "xai"],
+    ["mai-code-1.1-flash", "microsoft-ai"],
+    ["kimi-k3", "kimi"],
+    ["oswe-vscode-prime", "other"],
+    ["auto", "other"],
+    ["deepseek-v4", "other"],
+    ["glm-5", "other"],
+    ["qwen3-coder", "other"],
+  ]
+
+  for (const [model, creator] of cases) {
+    test(`${model} is ${creator}`, () => {
+      expect(modelCreator(model)).toBe(creator)
+    })
+  }
+
+  test("matches the segment after the last slash", () => {
+    expect(modelCreator("kimi/kimi-k3")).toBe("kimi")
+    expect(modelCreator("a/b/claude-opus-5")).toBe("anthropic")
+  })
+
+  test("is case-insensitive", () => {
+    expect(modelCreator("Claude-Sonnet-5.5")).toBe("anthropic")
+    expect(modelCreator("GPT-6")).toBe("openai")
+  })
+
+  test("the o-series rule needs digits then a hyphen or the end", () => {
+    expect(modelCreator("o4-mini")).toBe("openai")
+    expect(modelCreator("o3")).toBe("openai")
+    expect(modelCreator("opus-x")).toBe("other")
+    expect(modelCreator("o3x")).toBe("other")
+    expect(modelCreator("o")).toBe("other")
+  })
+
+  test("creatorColor is the creator's role token", () => {
+    expect(creatorColor("claude-sonnet-5.5")).toBe(
+      "var(--color-creator-anthropic)",
+    )
+    expect(creatorColor("mystery")).toBe("var(--color-creator-other)")
+  })
+})
+
+describe("formatPercent", () => {
+  test("shows 0% when the whole is not positive", () => {
+    expect(formatPercent(5, 0)).toBe("0%")
+    expect(formatPercent(5, -1)).toBe("0%")
+  })
+
+  test("shows <1% for a positive share below one percent", () => {
+    expect(formatPercent(1, 1000)).toBe("<1%")
+  })
+
+  test("rounds otherwise", () => {
+    expect(formatPercent(37, 100)).toBe("37%")
+    expect(formatPercent(1, 3)).toBe("33%")
+    expect(formatPercent(1, 100)).toBe("1%")
+    expect(formatPercent(0, 100)).toBe("0%")
+  })
+})
+
+describe("spanGeometry", () => {
+  const range = { end_ms: 2000, start_ms: 1000 }
+
+  test("places the span within the period", () => {
+    expect(spanGeometry(1250, 1750, range)).toEqual({ left: 0.25, width: 0.5 })
+  })
+
+  test("clamps left into [0, 1] and width into the remaining space", () => {
+    expect(spanGeometry(500, 1500, range)).toEqual({ left: 0, width: 1 })
+    const nearEnd = spanGeometry(1800, 2500, range)
+    expect(nearEnd?.left).toBe(0.8)
+    expect(nearEnd?.width).toBeCloseTo(0.2, 10)
+    expect(spanGeometry(2500, 3000, range)).toEqual({ left: 1, width: 0 })
+  })
+
+  test("a zero-width span stays renderable", () => {
+    expect(spanGeometry(1500, 1500, range)).toEqual({ left: 0.5, width: 0 })
+  })
+
+  test("an inverted session clamps its width to zero", () => {
+    const inverted = spanGeometry(1600, 1200, range)
+    expect(inverted?.left).toBeCloseTo(0.6, 10)
+    expect(inverted?.width).toBe(0)
+  })
+
+  test("has no span without a usable range", () => {
+    expect(spanGeometry(1, 2, undefined)).toBeNull()
+    expect(spanGeometry(1, 2, null)).toBeNull()
+    expect(spanGeometry(1, 2, { end_ms: Number.NaN, start_ms: 0 })).toBeNull()
+    expect(
+      spanGeometry(1, 2, { end_ms: 10, start_ms: Number.POSITIVE_INFINITY }),
+    ).toBeNull()
+    expect(spanGeometry(1, 2, { end_ms: 1000, start_ms: 1000 })).toBeNull()
+    expect(spanGeometry(1, 2, { end_ms: 500, start_ms: 1000 })).toBeNull()
   })
 })
 
@@ -869,6 +979,166 @@ describe("renderSessionsPager", () => {
   })
 })
 
+describe("renderSessionCard marks", () => {
+  const range = { end_ms: at(2026, 9, 30), start_ms: at(2026, 9, 29) }
+  const card = (session = sessionOf(), r: typeof range | null = range) =>
+    parse(renderSessionCard(session, { index: 0, nowMs: NOW, range: r }))
+  const model = (name: string, tokens: number, requests = 1) => ({
+    ...sessionOf(),
+    first_ms: 0,
+    last_ms: 0,
+    model: name,
+    request_count: requests,
+    total_tokens: tokens,
+  })
+  const styleValue = (
+    el: { getAttribute(name: string): string | null } | null | undefined,
+    prop: string,
+  ) =>
+    Number.parseFloat(
+      new RegExp(`${prop}:([\\d.]+)%`).exec(
+        el?.getAttribute("style") ?? "",
+      )?.[1] ?? "NaN",
+    )
+  const widths = (
+    el: {
+      querySelectorAll(selector: string): Iterable<{
+        getAttribute(name: string): string | null
+      }>
+    } | null,
+  ) =>
+    [...(el?.querySelectorAll("[data-bar-segment]") ?? [])].map((s) =>
+      styleValue(s, "width"),
+    )
+
+  test("the span track places the session within the period", () => {
+    const root = card(
+      sessionOf({ first_ms: at(2026, 9, 29, 6), last_ms: at(2026, 9, 29, 18) }),
+    )
+    const span = root.querySelector(".session-span")
+    expect(root.querySelector(".session-track")).not.toBeNull()
+    expect(styleValue(span, "left")).toBeCloseTo(25, 3)
+    expect(styleValue(span, "width")).toBeCloseTo(50, 3)
+  })
+
+  test("the span track renders without a span when range is missing", () => {
+    const root = card(sessionOf(), null)
+    expect(root.querySelector(".session-track")).not.toBeNull()
+    expect(root.querySelector(".session-span")).toBeNull()
+  })
+
+  test("the model share bar has a segment per model in API order", () => {
+    const root = card(
+      sessionOf({
+        byModel: [
+          model("gpt-6-sol", 3000),
+          model("claude-sonnet-5.5", 1000, 7),
+        ],
+        total_tokens: 4000,
+      }),
+    )
+    const bar = root.querySelector(".session-model-bar")
+    const segments = [...(bar?.querySelectorAll("[data-bar-segment]") ?? [])]
+    expect(widths(bar)).toEqual([75, 25])
+    expect(segments[0]?.getAttribute("title")).toBe("gpt-6-sol 75% of tokens")
+    expect(segments[1]?.getAttribute("title")).toBe(
+      "claude-sonnet-5.5 25% of tokens",
+    )
+    expect(segments[0]?.getAttribute("style")).toContain(
+      "var(--color-creator-openai)",
+    )
+    expect(segments[1]?.getAttribute("style")).toContain(
+      "var(--color-creator-anthropic)",
+    )
+  })
+
+  test("the model legend shows dot, name and a bold request count, in ink", () => {
+    const root = card(
+      sessionOf({ byModel: [model("claude-sonnet-5.5", 1000, 7)] }),
+    )
+    const item = root.querySelector(".session-model-legend .legend-item")
+    expect(item?.querySelector(".legend-dot")?.getAttribute("style")).toContain(
+      "var(--color-creator-anthropic)",
+    )
+    expect(item?.querySelector(".legend-name")?.textContent).toBe(
+      "claude-sonnet-5.5",
+    )
+    expect(item?.querySelector("b")?.textContent).toBe("7")
+    expect(item?.getAttribute("style")).toBeNull()
+    expect(
+      item?.querySelector(".legend-name")?.getAttribute("style"),
+    ).toBeNull()
+  })
+
+  test("a model with a tiny share shows <1% and a hostile name is escaped", () => {
+    const root = card(
+      sessionOf({
+        byModel: [model("<img src=x>", 1), model("big", 9999)],
+        total_tokens: 10_000,
+      }),
+    )
+    expect(root.querySelector("img")).toBeNull()
+    expect(
+      root.querySelector("[data-bar-segment]")?.getAttribute("title"),
+    ).toBe("<img src=x> <1% of tokens")
+  })
+
+  test("a session with no models has no model bar or legend", () => {
+    const root = card(sessionOf({ byModel: [] }))
+    expect(root.querySelector(".session-model-bar")).toBeNull()
+    expect(root.querySelector(".session-model-legend")).toBeNull()
+  })
+
+  test("token bar widths fill 100% when total_tokens exceeds the parts", () => {
+    const root = card(
+      sessionOf({
+        cache_creation_input_tokens: 120,
+        cache_read_input_tokens: 340,
+        input_tokens: 120,
+        output_tokens: 20,
+        total_tokens: 1000,
+      }),
+    )
+    const bar = root.querySelector(".session-token-bar")
+    const w = widths(bar)
+    expect(w).toHaveLength(4)
+    expect(w.reduce((a, b) => a + b, 0)).toBeCloseTo(100, 2)
+    expect(w[0]).toBeCloseTo((120 / 600) * 100, 2)
+    expect(
+      [...(bar?.querySelectorAll("[data-bar-segment]") ?? [])].map((s) =>
+        s.getAttribute("title"),
+      ),
+    ).toEqual(["Input 120", "Output 20", "Cache read 340", "Cache write 120"])
+    expect(bar?.innerHTML).toContain("var(--color-series-cache-write)")
+  })
+
+  test("a session with no token parts has an empty token bar", () => {
+    const root = card(
+      sessionOf({
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+      }),
+    )
+    expect(widths(root.querySelector(".session-token-bar"))).toEqual([
+      0, 0, 0, 0,
+    ])
+  })
+
+  test("the token legend is its own row, with compact figures", () => {
+    const root = card()
+    const legend = root.querySelector(".session-token-legend")
+    expect(
+      [...(legend?.querySelectorAll(".legend-item") ?? [])].map((i) =>
+        i.textContent.replaceAll(/\s+/g, " ").trim(),
+      ),
+    ).toEqual(["In 1.2M", "Out 85K", "Cache R 3.4M", "Cache W 120K"])
+    expect(legend?.querySelectorAll(".legend-dot")).toHaveLength(4)
+    expect(legend?.closest(".session-model-legend")).toBeNull()
+  })
+})
+
 describe("renderSessionCard", () => {
   const text = (root: ReturnType<typeof parse>, selector: string) =>
     root.querySelector(selector)?.textContent.replaceAll(/\s+/g, " ").trim()
@@ -943,7 +1213,7 @@ describe("renderSessionCard", () => {
   test("shows tokens, requests and cost", () => {
     const root = parse(renderSessionCard(sessionOf(), { index: 0, nowMs: NOW }))
 
-    expect(text(root, ".session-tokens")).toBe("4.8M tokens")
+    expect(text(root, ".session-tokens-total")).toBe("4.8M tokens")
     expect(text(root, ".session-requests")).toBe("12 requests")
     expect(text(root, ".session-cost")).toBe("$1.20 cost")
     expect(
@@ -1613,6 +1883,21 @@ describe("renderEventRows", () => {
     expect(trace?.getAttribute("type")).toBe("button")
     expect(trace?.getAttribute("title")).toBe("Copy trace id")
     expect(trace?.textContent).toBe("t<1>")
+  })
+
+  test("the model dot takes the model's creator colour", () => {
+    const root = parse(
+      `<table>${renderEventRows([eventOf({ model: "claude-opus-4" }), eventOf({ id: 2, model: "gpt-5" })], options)}</table>`,
+    )
+    const dots = [...root.querySelectorAll(".session-dot")].map((dot) =>
+      dot.getAttribute("style"),
+    )
+
+    expect(dots).toEqual([
+      `background:${creatorColor("claude-opus-4")}`,
+      `background:${creatorColor("gpt-5")}`,
+    ])
+    expect(dots[0]).not.toBe(dots[1])
   })
 
   test("no day dividers in a single-day session", () => {

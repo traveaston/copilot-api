@@ -67,6 +67,13 @@
         --color-series-cache-write: #f59e0b;
         --color-series-cost: #f59e0b;
         --color-series-request-events: #8b5cf6;
+        --color-creator-anthropic: #ad4f30;
+        --color-creator-openai: #009d83;
+        --color-creator-kimi: #007cff;
+        --color-creator-xai: #8a64be;
+        --color-creator-google: #f45475;
+        --color-creator-microsoft-ai: #cd8509;
+        --color-creator-other: #515151;
       }
 
       * {
@@ -644,6 +651,72 @@
       .session-active {
         color: var(--color-ink-soft);
         font-size: 11px;
+      }
+
+      .session-track {
+        position: relative;
+        display: block;
+        height: 6px;
+        margin-top: 10px;
+        border-radius: 9999px;
+        background: var(--color-line);
+      }
+
+      .session-span {
+        position: absolute;
+        top: -1px;
+        height: 8px;
+        min-width: 4px;
+        border-radius: 9999px;
+        background: var(--color-accent);
+      }
+
+      .session-bar {
+        display: flex;
+        height: 8px;
+        margin-top: 10px;
+        overflow: hidden;
+        border-radius: 9999px;
+        background: var(--color-line);
+      }
+
+      .session-tokens .session-bar {
+        margin-top: 4px;
+      }
+
+      .session-bar > span {
+        box-sizing: border-box;
+        flex: none;
+      }
+
+      .session-bar > span + span {
+        border-left: 2px solid var(--color-surface-solid);
+      }
+
+      .session-legend {
+        display: flex !important;
+        flex-wrap: wrap;
+        gap: 4px 12px;
+        margin-top: 5px;
+        color: var(--color-ink-cell);
+        font-size: 11px;
+      }
+
+      .legend-item {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+      }
+
+      .legend-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+      }
+
+      .legend-item b {
+        color: var(--color-ink-strong);
+        font-weight: 800;
       }
 
       .session-tokens .session-figure,
