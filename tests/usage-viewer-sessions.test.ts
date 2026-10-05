@@ -1540,6 +1540,7 @@ describe("session expansion transitions", () => {
         limit: 50,
         mode: "replace",
         model: null,
+        period: "today",
         requestId: requests[0].requestId,
         sessionless: false,
       },
@@ -2159,6 +2160,7 @@ describe("toggleModelFilter", () => {
         limit: 50,
         mode: "replace",
         model: MODEL_A,
+        period: "today",
         requestId: requests[0].requestId,
         sessionless: false,
       },
@@ -2643,6 +2645,7 @@ describe("state survival: Refresh", () => {
         limit: 50,
         mode: "replace",
         model: null,
+        period: "today",
         requestId: entry.requestId!,
         sessionless: false,
       },
@@ -3093,6 +3096,107 @@ describe("state survival: the other §5.10 rows", () => {
     expect([away.requests, back.requests]).toEqual([[], []])
     expect(back.state.page).toBe(before.page)
     expect(back.state.expanded).toBe(before.expanded)
+  })
+})
+
+describe("expansion requests use the period of the list on screen (spec §5.10, §5.11)", () => {
+  /** A `period` list with MULTI open on one page of more to come; OTHER is closed. */
+  function openOn(period: TokenUsageSessionsPage["period"]) {
+    const opened = toggleSession(
+      loadedState(
+        "sessions",
+        sessionsPageOf({ items: [MULTI, OTHER], period, total: 2 }),
+      ),
+      MULTI,
+    )
+    return applySessionEvents(opened.state, {
+      identity: MULTI_ID,
+      page: eventsPageOf({
+        has_more: true,
+        items: [eventOf({ id: 4 })],
+        next_cursor: "4:4",
+        total: 2,
+      }),
+      requestId: opened.requests[0].requestId,
+    }).state
+  }
+
+  /** The period each expansion action requests: toggle, Show more, filter, clear-filter, Retry. */
+  function periodsRequested(state: ReturnType<typeof openOn>) {
+    const more = showMoreEvents(state, MULTI_ID)
+    const failedMore = applySessionEventsError(more.state, {
+      identity: MULTI_ID,
+      message: "boom",
+      requestId: more.requests[0].requestId,
+    }).state
+    const filtered = toggleModelFilter(state, MULTI_ID, MODEL_A)
+    return [
+      toggleSession(state, OTHER),
+      more,
+      filtered,
+      toggleModelFilter(filtered.state, MULTI_ID, null),
+      retryEvents(failedMore, MULTI_ID),
+    ].map(({ requests }) => requests.map((request) => request.period))
+  }
+
+  /** One request per action, each for `period`. */
+  const eachAction = (period: TokenUsageSessionsPage["period"]) =>
+    Array.from({ length: 5 }, () => [period])
+
+  test("every expansion request carries the displayed list's period", () => {
+    expect(periodsRequested(openOn("last_7_days"))).toEqual(
+      eachAction("last_7_days"),
+    )
+  })
+
+  test("while a period change loads, requests keep the period on screen", () => {
+    const started = startSessionsLoad(openOn("today"), {
+      page: 1,
+      reason: "period",
+    })
+
+    expect(periodsRequested(started.state)).toEqual(eachAction("today"))
+  })
+
+  test("after a failed period change, requests keep the kept list's period", () => {
+    const started = startSessionsLoad(openOn("today"), {
+      page: 1,
+      reason: "period",
+    })
+    const failed = applySessionsError(started.state, {
+      message: "Gateway timeout",
+      missing: false,
+      requestId: started.requests[0].requestId,
+    }).state
+
+    expect(periodsRequested(failed)).toEqual(eachAction("today"))
+  })
+
+  test("survivor reloads, and requests after them, use the landed list's period", () => {
+    const landed = landLoad(
+      openOn("today"),
+      "period",
+      sessionsPageOf({
+        items: [MULTI, OTHER],
+        period: "last_30_days",
+        total: 2,
+      }),
+    )
+
+    expect(landed.requests).toMatchObject([
+      { identity: MULTI_ID, kind: "session-events", period: "last_30_days" },
+    ])
+    expect(toggleSession(landed.state, OTHER).requests).toMatchObject([
+      { period: "last_30_days" },
+    ])
+  })
+
+  test("no list on screen means no expansion request", () => {
+    const state = createSessionsState("sessions")
+    const toggled = toggleSession(state, SESSION)
+
+    expect(toggled.requests).toEqual([])
+    expect(toggled.state).toBe(state)
   })
 })
 

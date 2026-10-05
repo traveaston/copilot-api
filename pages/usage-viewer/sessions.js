@@ -315,7 +315,7 @@ export function formatCostList(costs) {
  * @typedef {object} SessionsState
  * @property {SessionsView} view The selected Request Events tab.
  * @property {boolean} available False after a 404 hides the Sessions tab.
- * @property {TokenUsageSessionsPage | null} page The displayed sessions page.
+ * @property {TokenUsageSessionsPage | null} page The displayed sessions page. Its `period` is the period every expansion request asks for.
  * @property {boolean} loading Whether a list request is in flight.
  * @property {SessionsLoadReason | null} reason Why the in-flight list load started.
  * @property {string | null} error The last list error, shown above the list.
@@ -864,6 +864,7 @@ function renderSessionsList(state, { nowMs, renderEmptyState, renderError }) {
  * @property {string | null} before The cursor to continue from, or null for the newest rows.
  * @property {number} limit
  * @property {"replace" | "append"} mode
+ * @property {TokenUsagePeriod} period The displayed list's period, not the period select's.
  *
  * @typedef {object} SessionExpansion One open session's loaded events.
  * @property {string} key
@@ -927,12 +928,16 @@ export function isLongGap(gapMs) {
 
 /**
  * Issues an events request with a fresh id and records it on the session's entry.
+ * The request asks for the displayed list's period, so the rows always match
+ * the cards on screen, even while a period change loads or after it fails.
+ * Without a displayed list there is no card to load, so nothing is issued.
  * @param {SessionsState} state
  * @param {SessionExpansion} entry The entry as it should be once the request is in flight.
  * @param {{ before: string | null, mode: "replace" | "append" }} options
  * @returns {SessionEventsTransition}
  */
 function requestSessionEvents(state, entry, { before, mode }) {
+  if (!state.page) return { requests: [], state }
   const requestId = state.nextRequestId
   /** @type {SessionEventsRequest} */
   const request = {
@@ -943,6 +948,7 @@ function requestSessionEvents(state, entry, { before, mode }) {
     limit: SESSION_EVENTS_LIMIT,
     mode,
     model: entry.filter,
+    period: state.page.period,
     requestId,
     sessionless: entry.sessionless,
   }

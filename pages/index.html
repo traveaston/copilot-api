@@ -3393,7 +3393,7 @@
           state.sessions = transition.state;
           for (const followUp of transition.requests) {
             if (followUp.kind === "session-events") {
-              void runSessionEventsRequest(followUp, usageUrl, period);
+              void runSessionEventsRequest(followUp, usageUrl);
             } else {
               void runSessionsRequest(followUp, usageUrl, period);
             }
@@ -3469,7 +3469,9 @@
 
         // --- Session expansion glue (events load through fetchJson) ---
 
-        async function runSessionEventsRequest(request, usageUrl, period) {
+        // Each request carries the displayed list's period, never the
+        // select's: during or after a failed period change they differ.
+        async function runSessionEventsRequest(request, usageUrl) {
           let transition;
           try {
             const page = await fetchJson(
@@ -3480,7 +3482,7 @@
                   key: request.key,
                   limit: request.limit,
                   model: request.model,
-                  period,
+                  period: request.period,
                   sessionless: request.sessionless,
                 }
               )
@@ -3513,9 +3515,8 @@
             return;
           }
           const usageUrl = resolveUsageUrl(endpoint);
-          const period = getSelectedPeriod();
           for (const request of transition.requests) {
-            void runSessionEventsRequest(request, usageUrl, period);
+            void runSessionEventsRequest(request, usageUrl);
           }
         }
 
