@@ -3499,8 +3499,55 @@
           }
         }
 
+        // Sessions copy buttons only: the Clipboard API is missing over plain
+        // HTTP, so fall back to a hidden textarea and execCommand("copy").
+        function copyTextWithFallback(text) {
+          const fallback = () => {
+            const area = document.createElement("textarea");
+            area.value = text;
+            area.setAttribute("readonly", "");
+            area.style.cssText = "position:fixed;top:0;left:0;opacity:0";
+            document.body.appendChild(area);
+            area.select();
+            try {
+              return document.execCommand("copy");
+            } catch {
+              return false;
+            } finally {
+              area.remove();
+            }
+          };
+          if (!navigator.clipboard?.writeText) {
+            return Promise.resolve(fallback());
+          }
+          return navigator.clipboard
+            .writeText(text)
+            .then(() => true, () => fallback());
+        }
+
+        async function copySessionText(button, text, label) {
+          const copied = await copyTextWithFallback(text);
+          button.textContent = copied ? "Copied" : "Copy failed";
+          setTimeout(() => {
+            // A render in between replaced the button; this write is then moot.
+            button.textContent = label;
+          }, 1200);
+        }
+
         function handleSessionAction(button) {
           const action = button.dataset.sessionAction;
+          if (action === "copy-key") {
+            void copySessionText(button, button.dataset.sessionKey, "Copy");
+            return;
+          }
+          if (action === "copy-trace") {
+            void copySessionText(
+              button,
+              button.dataset.traceId,
+              button.dataset.traceId,
+            );
+            return;
+          }
           if (action === "tab") {
             selectSessionsView(button.dataset.sessionView);
             return;

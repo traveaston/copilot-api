@@ -1208,7 +1208,7 @@ export function renderSessionExpansion(session, entry, { nowMs }) {
     breakdown || rows ?
       `<div class="session-events-wrap"><table class="session-events-table">${breakdown}${rows}</table></div>`
     : ""
-  return `<div class="session-head">${label} <code class="session-full-key">${escapeHtml(session.key)}</code> <span class="session-head-endpoints">${escapeHtml(session.endpoints.join(", "))}${multiModel ? " · click a model to filter" : ""}</span></div>${table}${renderEventsFooter(entry)}`
+  return `<div class="session-head">${label} <code class="session-full-key">${escapeHtml(session.key)}</code> <button type="button" class="session-link-button" title="Copy session key" data-session-action="copy-key" data-session-key="${escapeHtml(session.key)}" data-session-sessionless="${session.sessionless}">Copy</button> <span class="session-head-endpoints">${escapeHtml(session.endpoints.join(", "))}${multiModel ? " · click a model to filter" : ""}</span></div>${table}${renderEventsFooter(entry)}`
 }
 
 // --- Model breakdown and filter (spec §5.5, §5.10) ---
