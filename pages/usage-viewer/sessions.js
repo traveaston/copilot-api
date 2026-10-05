@@ -144,6 +144,15 @@ export function formatClock(ms, { seconds = false } = {}) {
 }
 
 /**
+ * Full local date and time for a tooltip, in the browser's own locale.
+ * @param {number} ms
+ * @returns {string}
+ */
+function formatFullTimestamp(ms) {
+  return new Date(ms).toLocaleString()
+}
+
+/**
  * Local day label: "Sep 29", or "Dec 31, 2025" when the year differs from now's.
  * @param {number} ms
  * @param {number} nowMs
@@ -762,7 +771,7 @@ function renderTokenMarks(session) {
 export function renderSessionCard(session, { expansion, index, nowMs, range }) {
   const expanded = expansion !== undefined
   const panelId = `session-panel-${index}`
-  const lastActive = new Date(session.last_ms).toLocaleString()
+  const lastActive = formatFullTimestamp(session.last_ms)
   const day = `${formatDayLabel(session.last_ms, nowMs)} · ${formatDuration(session.last_ms - session.first_ms)}`
   const requestWord = session.request_count === 1 ? "request" : "requests"
   return `<article class="session-card" data-expanded="${expanded}">
@@ -1177,7 +1186,7 @@ export function renderEventRows(
     const trace = escapeHtml(event.trace_id)
     return `${divider}<tr class="session-event-row">
 <td><span class="session-event-model"><span class="session-dot" aria-hidden="true" style="background:${creatorColor(event.model)}"></span>${escapeHtml(event.model)}</span></td>
-<td class="session-mono" title="${escapeHtml(new Date(event.created_at_ms).toLocaleString())}">${escapeHtml(formatClock(event.created_at_ms, { seconds: true }))}</td>
+<td class="session-mono" title="${escapeHtml(formatFullTimestamp(event.created_at_ms))}">${escapeHtml(formatClock(event.created_at_ms, { seconds: true }))}</td>
 <td class="${gapClass}">${escapeHtml(formatGap(gapMs))}</td>
 <td class="session-num">${formatInteger(event.input_tokens)}</td>
 <td class="session-num">${formatInteger(event.output_tokens)}</td>
