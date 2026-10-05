@@ -2056,3 +2056,61 @@ describe("renderSessionExpansion and the expanded card", () => {
     expect(root.textContent).toContain("Loading events...")
   })
 })
+
+describe("session copy controls", () => {
+  const session = sessionOf({ endpoints: ["messages"] })
+
+  function expansionRoot() {
+    const opened = toggleSession(loadedState("sessions"), session)
+    const entry = applySessionEvents(opened.state, {
+      identity: identityOf(session),
+      page: eventsPageOf({
+        items: [eventOf({ trace_id: "trace-abc" })],
+        total: 1,
+      }),
+      requestId: opened.requests[0].requestId,
+    }).state.expanded[identityOf(session)]
+    return parse(renderSessionExpansion(session, entry, { nowMs: NOW }))
+  }
+
+  test("head line Copy button carries the key attributes", () => {
+    const button = expansionRoot().querySelector(
+      '.session-head [data-session-action="copy-key"]',
+    )
+    expect(button?.tagName).toBe("BUTTON")
+    expect(button?.getAttribute("type")).toBe("button")
+    expect(button?.textContent).toBe("Copy")
+    expect(button?.getAttribute("title")).toBe("Copy session key")
+    expect(button?.getAttribute("data-session-key")).toBe(session.key)
+    expect(button?.getAttribute("data-session-sessionless")).toBe("false")
+  })
+
+  test("sessionless head line Copy button flags sessionless", () => {
+    const sessionless = sessionOf({ sessionless: true })
+    const opened = toggleSession(loadedState("sessions"), sessionless)
+    const root = parse(
+      renderSessionExpansion(
+        sessionless,
+        opened.state.expanded[identityOf(sessionless)],
+        {
+          nowMs: NOW,
+        },
+      ),
+    )
+    expect(
+      root
+        .querySelector('[data-session-action="copy-key"]')
+        ?.getAttribute("data-session-sessionless"),
+    ).toBe("true")
+  })
+
+  test("trace button is a titled button carrying the trace id", () => {
+    const button = expansionRoot().querySelector(
+      '[data-session-action="copy-trace"]',
+    )
+    expect(button?.getAttribute("type")).toBe("button")
+    expect(button?.getAttribute("title")).toBe("Copy trace id")
+    expect(button?.getAttribute("data-trace-id")).toBe("trace-abc")
+    expect(button?.textContent).toBe("trace-abc")
+  })
+})
