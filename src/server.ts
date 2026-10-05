@@ -56,7 +56,12 @@ export function createServer(options: CreateServerOptions = {}): Hono {
     "*",
     createAuthMiddleware({
       getApiKeys: options.getApiKeys,
-      allowUnauthenticatedPaths: ["/", "/usage-viewer", "/usage-viewer/"],
+      allowUnauthenticatedPaths: [
+        "/",
+        "/usage-viewer",
+        "/usage-viewer/",
+        "/usage-viewer/sessions.js",
+      ],
       shouldSkipPath: (path) => path.startsWith("/admin/"),
       allowWhenNoApiKeys: !networkExposed,
     }),
@@ -76,6 +81,15 @@ export function createServer(options: CreateServerOptions = {}): Hono {
     return c.html(readFileSync(usageViewerFileUrl, "utf8"))
   })
   server.get("/usage-viewer/", (c) => c.redirect("/usage-viewer", 301))
+  server.get("/usage-viewer/sessions.js", (c) => {
+    const sessionsModuleUrl = new URL(
+      "../pages/usage-viewer/sessions.js",
+      import.meta.url,
+    )
+    return c.body(readFileSync(sessionsModuleUrl, "utf8"), 200, {
+      "Content-Type": "text/javascript; charset=utf-8",
+    })
+  })
 
   server.route("/chat/completions", completionRoutes)
   server.route("/admin/config", configRoutes)
