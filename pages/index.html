@@ -689,6 +689,180 @@
         opacity: 0.55;
       }
 
+      .session-card[data-expanded="true"] {
+        border-color: color-mix(in srgb, var(--color-accent) 45%, transparent);
+        box-shadow: 0 6px 18px
+          color-mix(in srgb, var(--color-accent) 8%, transparent);
+      }
+
+      .session-card[data-expanded="true"] .session-chevron {
+        transform: rotate(90deg);
+      }
+
+      .session-chevron {
+        transition: transform 0.12s;
+      }
+
+      .session-expansion {
+        padding: 4px 14px 10px 136px;
+        border-top: 1px dashed var(--color-line);
+      }
+
+      .session-expansion[hidden] {
+        display: none;
+      }
+
+      .session-head {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        padding: 8px 0;
+        color: var(--color-ink-soft);
+        font-size: 12px;
+      }
+
+      .session-full-key {
+        color: var(--color-ink-strong);
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12.5px;
+        font-weight: 600;
+        user-select: all;
+      }
+
+      .session-head-endpoints {
+        margin-left: auto;
+      }
+
+      .session-events-wrap {
+        overflow-x: auto;
+        margin-bottom: 4px;
+        border: 1px solid var(--color-line);
+        border-radius: 8px;
+      }
+
+      .session-events-table {
+        width: 100%;
+        border-collapse: separate;
+        border-spacing: 0;
+        font-size: 12px;
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+      }
+
+      .session-events-table th {
+        padding: 6px 10px;
+        background: var(--color-sunken);
+        color: var(--color-ink-soft);
+        font-size: 11px;
+        font-weight: 650;
+        text-align: left;
+      }
+
+      .session-events-table td {
+        padding: 5px 10px;
+        border-top: 1px solid var(--color-sunken);
+        color: var(--color-ink-cell);
+      }
+
+      .session-events-table .session-num {
+        text-align: right;
+      }
+
+      .session-events-subheader th {
+        border-top: 2px solid var(--color-line);
+      }
+
+      .session-events-table tr:not(.session-day-row) > :first-child {
+        position: sticky;
+        left: 0;
+        z-index: 1;
+      }
+
+      .session-events-table th:first-child {
+        background: var(--color-sunken);
+      }
+
+      .session-events-table td:first-child {
+        background: var(--color-surface-solid);
+      }
+
+      .session-mono {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+
+      .session-gap {
+        color: var(--color-ink-soft);
+      }
+
+      .session-gap-long {
+        color: var(--color-ink-strong);
+        font-weight: 700;
+      }
+
+      .session-total {
+        color: var(--color-ink-strong);
+      }
+
+      .session-event-cost {
+        color: var(--color-series-cost);
+      }
+
+      .session-dot {
+        display: inline-block;
+        width: 8px;
+        height: 8px;
+        margin-right: 6px;
+        border-radius: 50%;
+        background: var(--color-ink-faint);
+      }
+
+      .session-trace {
+        color: var(--color-ink-soft);
+        cursor: copy;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11px;
+      }
+
+      .session-trace:hover {
+        color: var(--color-accent);
+      }
+
+      .session-events-table .session-day-row td {
+        padding: 8px 10px 3px;
+        border-top: 0;
+        color: var(--color-ink-soft);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+        text-transform: uppercase;
+      }
+
+      .session-day-label {
+        display: inline-block;
+        position: sticky;
+        left: 10px;
+      }
+
+      .session-events-footer {
+        padding: 6px 0 2px;
+        color: var(--color-ink-soft);
+        font-size: 12px;
+      }
+
+      .session-footer-error {
+        color: var(--color-danger);
+      }
+
+      .session-link-button {
+        color: var(--color-accent);
+        font-size: 12px;
+        font-weight: 650;
+      }
+
+      .session-link-button:hover {
+        text-decoration: underline;
+      }
+
       @media (max-width: 920px) {
         .session-card-header {
           grid-template-columns: 1fr auto auto 14px;
@@ -699,6 +873,18 @@
         .session-tokens {
           order: 1;
           grid-column: 1 / -1;
+        }
+
+        .session-expansion {
+          padding: 4px 10px 10px;
+        }
+
+        .session-full-key {
+          word-break: break-all;
+        }
+
+        .session-head-endpoints {
+          margin-left: 0;
         }
       }
 
@@ -3097,10 +3283,89 @@
             ?.focus();
         }
 
+        // --- Session expansion glue (events load through fetchJson) ---
+
+        async function runSessionEventsRequest(request, usageUrl, period) {
+          let transition;
+          try {
+            const page = await fetchJson(
+              usageViewerSessions.buildSessionEventsUrl(
+                deriveEndpointUrl(usageUrl, "token-usage"),
+                {
+                  before: request.before,
+                  key: request.key,
+                  limit: request.limit,
+                  model: request.model,
+                  period,
+                  sessionless: request.sessionless,
+                }
+              )
+            );
+            transition = usageViewerSessions.applySessionEvents(state.sessions, {
+              identity: request.identity,
+              page,
+              requestId: request.requestId,
+            });
+          } catch (error) {
+            console.error("Session events fetch error:", error);
+            transition = usageViewerSessions.applySessionEventsError(
+              state.sessions,
+              {
+                identity: request.identity,
+                message: getErrorMessage(error),
+                requestId: request.requestId,
+              }
+            );
+          }
+          state.sessions = transition.state;
+          render("usage");
+        }
+
+        function runSessionEventsTransition(transition) {
+          const endpoint = endpointUrlInput.value.trim();
+          state.sessions = transition.state;
+          render("usage");
+          if (!endpoint) {
+            return;
+          }
+          const usageUrl = resolveUsageUrl(endpoint);
+          const period = getSelectedPeriod();
+          for (const request of transition.requests) {
+            void runSessionEventsRequest(request, usageUrl, period);
+          }
+        }
+
+        function handleSessionExpansionAction(action, button) {
+          const identity = usageViewerSessions.identityOf({
+            key: button.dataset.sessionKey,
+            sessionless: button.dataset.sessionSessionless === "true",
+          });
+          if (action === "toggle") {
+            runSessionEventsTransition(
+              usageViewerSessions.toggleSession(state.sessions, {
+                key: button.dataset.sessionKey,
+                sessionless: button.dataset.sessionSessionless === "true",
+              })
+            );
+          } else if (action === "more") {
+            runSessionEventsTransition(
+              usageViewerSessions.showMoreEvents(state.sessions, identity)
+            );
+          } else if (action === "retry") {
+            runSessionEventsTransition(
+              usageViewerSessions.retryEvents(state.sessions, identity)
+            );
+          }
+        }
+
         function handleSessionAction(button) {
           const action = button.dataset.sessionAction;
           if (action === "tab") {
             selectSessionsView(button.dataset.sessionView);
+            return;
+          }
+          if (state.sessions && ["toggle", "more", "retry"].includes(action)) {
+            handleSessionExpansionAction(action, button);
             return;
           }
           const sessionsPage = state.sessions?.page;
