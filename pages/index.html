@@ -618,6 +618,7 @@
       </div>
     </div>
 
+    <script type="module">import * as sessions from "./usage-viewer/sessions.js"; window.usageViewerSessions = sessions;</script>
     <script>
       document.addEventListener("DOMContentLoaded", () => {
         const endpointForm = document.getElementById("endpoint-form");
@@ -672,6 +673,8 @@
         };
 
         // --- State Management ---
+        let usageViewerSessions = null;
+
         const state = {
           activeTab: "usage",
           models: null,
@@ -2805,6 +2808,7 @@
          * Initializes the application.
          */
         function init() {
+          usageViewerSessions = window.usageViewerSessions ?? null;
           endpointForm.addEventListener("submit", handleFormSubmit);
           pageTabs.addEventListener("click", (event) => {
             const button = event.target.closest("[data-tab]");
