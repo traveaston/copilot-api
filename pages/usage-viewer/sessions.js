@@ -1196,5 +1196,5 @@ export function renderSessionExpansion(session, entry, { nowMs }) {
     entry.items.length > 0 ?
       `<div class="session-events-wrap"><table class="session-events-table">${renderEventRows(entry.items, { multiDay, nowMs })}</table></div>`
     : ""
-  return `<div class="session-head">${label} <code class="session-full-key">${escapeHtml(session.key)}</code> <span class="session-head-endpoints">${escapeHtml(session.endpoints.join(", "))}</span></div>${table}${renderEventsFooter(entry)}`
+  return `<div class="session-head">${label} <code class="session-full-key">${escapeHtml(session.key)}</code> <button type="button" class="session-link-button" title="Copy session key" data-session-action="copy-key" data-session-key="${escapeHtml(session.key)}" data-session-sessionless="${session.sessionless}">Copy</button> <span class="session-head-endpoints">${escapeHtml(session.endpoints.join(", "))}</span></div>${table}${renderEventsFooter(entry)}`
 }
