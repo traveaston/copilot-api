@@ -144,6 +144,15 @@ export function formatClock(ms, { seconds = false } = {}) {
 }
 
 /**
+ * Full local date and time for a tooltip, in the browser's own locale.
+ * @param {number} ms
+ * @returns {string}
+ */
+function formatFullTimestamp(ms) {
+  return new Date(ms).toLocaleString()
+}
+
+/**
  * Local day label: "Sep 29", or "Dec 31, 2025" when the year differs from now's.
  * @param {number} ms
  * @param {number} nowMs
@@ -315,7 +324,7 @@ export function formatCostList(costs) {
  * @typedef {object} SessionsState
  * @property {SessionsView} view The selected Request Events tab.
  * @property {boolean} available False after a 404 hides the Sessions tab.
- * @property {TokenUsageSessionsPage | null} page The displayed sessions page.
+ * @property {TokenUsageSessionsPage | null} page The displayed sessions page. Its `period` is the period every expansion request asks for.
  * @property {boolean} loading Whether a list request is in flight.
  * @property {SessionsLoadReason | null} reason Why the in-flight list load started.
  * @property {string | null} error The last list error, shown above the list.
@@ -721,13 +730,13 @@ function renderTokenMarks(session) {
     },
     {
       color: "var(--color-series-cache-read)",
-      label: "Cache read",
+      label: "Cache Read",
       short: "Cache R",
       value: session.cache_read_input_tokens,
     },
     {
       color: "var(--color-series-cache-write)",
-      label: "Cache write",
+      label: "Cache Write",
       short: "Cache W",
       value: session.cache_creation_input_tokens,
     },
@@ -762,7 +771,7 @@ function renderTokenMarks(session) {
 export function renderSessionCard(session, { expansion, index, nowMs, range }) {
   const expanded = expansion !== undefined
   const panelId = `session-panel-${index}`
-  const lastActive = new Date(session.last_ms).toLocaleString()
+  const lastActive = formatFullTimestamp(session.last_ms)
   const day = `${formatDayLabel(session.last_ms, nowMs)} · ${formatDuration(session.last_ms - session.first_ms)}`
   const requestWord = session.request_count === 1 ? "request" : "requests"
   return `<article class="session-card" data-expanded="${expanded}">
@@ -864,6 +873,7 @@ function renderSessionsList(state, { nowMs, renderEmptyState, renderError }) {
  * @property {string | null} before The cursor to continue from, or null for the newest rows.
  * @property {number} limit
  * @property {"replace" | "append"} mode
+ * @property {TokenUsagePeriod} period The displayed list's period, not the period select's.
  *
  * @typedef {object} SessionExpansion One open session's loaded events.
  * @property {string} key
@@ -927,12 +937,16 @@ export function isLongGap(gapMs) {
 
 /**
  * Issues an events request with a fresh id and records it on the session's entry.
+ * The request asks for the displayed list's period, so the rows always match
+ * the cards on screen, even while a period change loads or after it fails.
+ * Without a displayed list there is no card to load, so nothing is issued.
  * @param {SessionsState} state
  * @param {SessionExpansion} entry The entry as it should be once the request is in flight.
  * @param {{ before: string | null, mode: "replace" | "append" }} options
  * @returns {SessionEventsTransition}
  */
 function requestSessionEvents(state, entry, { before, mode }) {
+  if (!state.page) return { requests: [], state }
   const requestId = state.nextRequestId
   /** @type {SessionEventsRequest} */
   const request = {
@@ -943,6 +957,7 @@ function requestSessionEvents(state, entry, { before, mode }) {
     limit: SESSION_EVENTS_LIMIT,
     mode,
     model: entry.filter,
+    period: state.page.period,
     requestId,
     sessionless: entry.sessionless,
   }
@@ -1120,7 +1135,7 @@ export function renderEventsFooter(entry) {
  * The events `<tbody>`: the single-model sub-header, then one row per event,
  * with day dividers in a multi-day session.
  * @param {ReadonlyArray<TokenUsageSessionEventRecord & { prev_ms?: number | null }>} items
- * @param {{ multiDay: boolean, multiModel?: boolean, nowMs: number, sessionKey?: string, sessionless?: boolean }} options `sessionKey` and `sessionless` stamp each trace button with its session, for focus restoration. `multiModel` swaps the sub-header to "Events" with blank number columns, since the breakdown above carries the labels.
+ * @param {{ multiDay: boolean, multiModel?: boolean, nowMs: number, sessionKey?: string, sessionless?: boolean }} options `sessionKey` and `sessionless` stamp each trace button with its session, and each also carries its event's id, for focus restoration. `multiModel` swaps the sub-header to "Events" with blank number columns, since the breakdown above carries the labels.
  * @returns {string}
  */
 export function renderEventRows(
@@ -1171,7 +1186,7 @@ export function renderEventRows(
     const trace = escapeHtml(event.trace_id)
     return `${divider}<tr class="session-event-row">
 <td><span class="session-event-model"><span class="session-dot" aria-hidden="true" style="background:${creatorColor(event.model)}"></span>${escapeHtml(event.model)}</span></td>
-<td class="session-mono" title="${escapeHtml(new Date(event.created_at_ms).toLocaleString())}">${escapeHtml(formatClock(event.created_at_ms, { seconds: true }))}</td>
+<td class="session-mono" title="${escapeHtml(formatFullTimestamp(event.created_at_ms))}">${escapeHtml(formatClock(event.created_at_ms, { seconds: true }))}</td>
 <td class="${gapClass}">${escapeHtml(formatGap(gapMs))}</td>
 <td class="session-num">${formatInteger(event.input_tokens)}</td>
 <td class="session-num">${formatInteger(event.output_tokens)}</td>
@@ -1179,7 +1194,7 @@ export function renderEventRows(
 <td class="session-num">${formatInteger(event.cache_creation_input_tokens)}</td>
 <td class="session-num session-total">${formatInteger(event.total_tokens)}</td>
 <td class="session-num session-event-cost">${formatCostList(event.cost ? [event.cost] : null)}</td>
-<td><button type="button" class="session-trace" title="Copy trace id" data-session-action="copy-trace"${owner} data-trace-id="${trace}">${trace}</button></td>
+<td><button type="button" class="session-trace" title="Copy trace id" data-session-action="copy-trace"${owner} data-session-event-id="${event.id}" data-trace-id="${trace}">${trace}</button></td>
 </tr>`
   })
   return `<tbody class="session-events-body"><tr class="session-events-subheader">${header}</tr>${rows.join("")}</tbody>`
@@ -1301,12 +1316,12 @@ export function renderBreakdownRows(session, entry, { nowMs }) {
       part("Input", model.input_tokens, "var(--color-series-input)"),
       part("Output", model.output_tokens, "var(--color-series-output)"),
       part(
-        "Cache read",
+        "Cache Read",
         model.cache_read_input_tokens,
         "var(--color-series-cache-read)",
       ),
       part(
-        "Cache write",
+        "Cache Write",
         model.cache_creation_input_tokens,
         "var(--color-series-cache-write)",
       ),
@@ -1345,13 +1360,14 @@ const FOCUS_FIELDS = [
   "sessionSessionless",
   "sessionModel",
   "sessionView",
-  "traceId",
+  "sessionEventId",
 ]
 
 /**
  * The attributes that identify a session control across renders, or null for an
- * element that is not one. `traceId` is included so one session's trace buttons
- * stay distinct.
+ * element that is not one. `sessionEventId` is included so one session's trace
+ * buttons stay distinct: its events can share a trace id, and a sessionless
+ * session's events always do.
  * @param {Record<string, string | undefined>} dataset a control's `dataset`
  * @returns {Record<string, string> | null}
  */

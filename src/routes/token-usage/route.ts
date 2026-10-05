@@ -22,6 +22,7 @@ const periods = new Set<TokenUsagePeriod>([
   "lifetime",
 ])
 const DEFAULT_EVENTS_PAGE_SIZE = 20
+const DEFAULT_SESSIONS_PAGE_SIZE = 20
 const DEFAULT_SESSION_EVENTS_LIMIT = 50
 
 const legacyPeriods: Record<string, TokenUsagePeriod> = {
@@ -71,7 +72,7 @@ tokenUsageRoute.get("/sessions", async (c) => {
   const page = parsePositiveInt(c.req.query("page"), 1)
   const pageSize = parsePositiveInt(
     c.req.query("page_size"),
-    DEFAULT_EVENTS_PAGE_SIZE,
+    DEFAULT_SESSIONS_PAGE_SIZE,
   )
   const sessionsPage = await getTokenUsageSessionsPage({
     page,

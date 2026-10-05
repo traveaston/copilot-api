@@ -601,6 +601,11 @@ function createEmptyDailySummary(
   }
 }
 
+/** Clamps a requested page size, or an events limit, to 1..100. */
+function clampPageSize(value: number): number {
+  return Math.min(100, Math.max(1, Math.floor(value)))
+}
+
 export function createEmptyEventsPage(input: {
   page: number
   pageSize: number
@@ -608,7 +613,7 @@ export function createEmptyEventsPage(input: {
 }): TokenUsageEventsPage {
   const range = getPeriodRange(input.period)
   const page = Math.max(1, Math.floor(input.page))
-  const pageSize = Math.min(100, Math.max(1, Math.floor(input.pageSize)))
+  const pageSize = clampPageSize(input.pageSize)
 
   return {
     items: [],
@@ -631,7 +636,7 @@ export function createEmptySessionsPage(input: {
   pageSize: number
   period: TokenUsagePeriod
 }): TokenUsageSessionsPage {
-  return createEmptyEventsPage(input) as unknown as TokenUsageSessionsPage
+  return { ...createEmptyEventsPage(input), items: [] }
 }
 
 export function createEmptySessionEventsPage(
@@ -1106,7 +1111,7 @@ export async function getTokenUsageEventsPage(input: {
 
   await flushTokenUsageEvents()
   const page = Math.max(1, Math.floor(input.page))
-  const pageSize = Math.min(100, Math.max(1, Math.floor(input.pageSize)))
+  const pageSize = clampPageSize(input.pageSize)
   const offset = (page - 1) * pageSize
   const db = await getDb()
   const range = getPeriodRangeFromDb(db, input.period)
@@ -1156,6 +1161,12 @@ export async function getTokenUsageEventsPage(input: {
 const SESSION_KEY_SQL =
   "CASE WHEN session_id = '' THEN trace_id ELSE session_id END"
 
+/**
+ * The model as the breakdown and event rows label it: an empty model reads
+ * "unknown", so filtering on that label must also match the empty-model rows.
+ */
+const MODEL_LABEL_SQL = "CASE WHEN model = '' THEN 'unknown' ELSE model END"
+
 const TOTALS_SELECT_SQL = `
       COUNT(*) AS request_count,
       COALESCE(SUM(input_tokens), 0) AS input_tokens,
@@ -1169,6 +1180,14 @@ const TOTALS_SELECT_SQL = `
 
 function sessionIdentity(row: Record<string, unknown>): string {
   return `${row.sessionless === 1 ? 1 : 0}:${stringFromRow(row, "key")}`
+}
+
+/**
+ * A (session, model) map key. JSON keeps the two parts apart, since session
+ * keys and models can both contain ":".
+ */
+function sessionModelKey(row: Record<string, unknown>): string {
+  return JSON.stringify([sessionIdentity(row), stringFromRow(row, "model")])
 }
 
 function pushCost(
@@ -1253,11 +1272,7 @@ function getSessionDetails(
   for (const row of costRows) pushCost(costs, sessionIdentity(row), row)
   const modelCosts = new Map<string, Array<TokenUsageCost>>()
   for (const row of modelCostRows) {
-    pushCost(
-      modelCosts,
-      `${sessionIdentity(row)}:${stringFromRow(row, "model")}`,
-      row,
-    )
+    pushCost(modelCosts, sessionModelKey(row), row)
   }
   const models = new Map<string, Array<TokenUsageSessionModelSummary>>()
   for (const row of modelRows) {
@@ -1266,10 +1281,7 @@ function getSessionDetails(
     models.set(id, [
       ...(models.get(id) ?? []),
       {
-        ...modelSummaryFromRow(
-          row,
-          modelCosts.get(`${id}:${stringFromRow(row, "model")}`) ?? [],
-        ),
+        ...modelSummaryFromRow(row, modelCosts.get(sessionModelKey(row)) ?? []),
         first_ms: numberFromRow(row, "first_ms"),
         last_ms: numberFromRow(row, "last_ms"),
         model,
@@ -1300,7 +1312,7 @@ export async function getTokenUsageSessionsPage(input: {
 
   await flushTokenUsageEvents()
   const page = Math.max(1, Math.floor(input.page))
-  const pageSize = Math.min(100, Math.max(1, Math.floor(input.pageSize)))
+  const pageSize = clampPageSize(input.pageSize)
   const db = await getDb()
   const range = getPeriodRangeFromDb(db, input.period)
 
@@ -1364,14 +1376,14 @@ export async function getTokenUsageSessionEventsPage(
   }
 
   await flushTokenUsageEvents()
-  const limit = Math.min(100, Math.max(1, Math.floor(input.limit)))
+  const limit = clampPageSize(input.limit)
   const db = await getDb()
   const range = getPeriodRangeFromDb(db, input.period)
   const keyFilter =
     "session_id" in input.key ?
       { params: [input.key.session_id], sql: "session_id = ?" }
     : { params: [input.key.trace_id], sql: "session_id = '' AND trace_id = ?" }
-  const modelSql = input.model === null ? "" : " AND model = ?"
+  const modelSql = input.model === null ? "" : ` AND ${MODEL_LABEL_SQL} = ?`
   const where = `created_at_ms >= ? AND created_at_ms < ? AND ${keyFilter.sql}${modelSql}`
   const params = [
     range.startMs,

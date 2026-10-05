@@ -283,6 +283,37 @@ describe("sessions aggregates", () => {
     expect(items[0].first_ms).toBe(todayStart)
     expect(items[0].byModel[0].request_count).toBe(2)
   })
+
+  test("per-model costs stay apart when keys and models contain colons", async () => {
+    seed(
+      persistedEvent({
+        cost_currency: "USD",
+        created_at_ms: ago(20),
+        model: "z",
+        session_id: "x:y",
+        total_cost_nanos: 1_000_000_000,
+      }),
+      persistedEvent({
+        cost_currency: "USD",
+        created_at_ms: ago(10),
+        model: "y:z",
+        session_id: "x",
+        total_cost_nanos: 2_000_000_000,
+      }),
+    )
+
+    const { items } = await fetchSessions()
+
+    expect(
+      items.map((session) => [
+        session.key,
+        session.byModel.map((m) => m.costs.map((c) => c.total_cost_nanos)),
+      ]),
+    ).toEqual([
+      ["x", [[2_000_000_000]]],
+      ["x:y", [[1_000_000_000]]],
+    ])
+  })
 })
 
 describe("sessions paging", () => {
@@ -591,6 +622,31 @@ describe("session events", () => {
     )
     expect(unfiltered).toMatchObject({ model: null, total: 4 })
     expect(unfiltered.items[0].prev_ms).toBe(ago(15))
+  })
+
+  test("filtering on the breakdown's unknown model returns the events with no model", async () => {
+    seed(
+      persistedEvent({ created_at_ms: ago(30), model: "", session_id: "s" }),
+      persistedEvent({ created_at_ms: ago(20), model: "a", session_id: "s" }),
+      persistedEvent({ created_at_ms: ago(10), model: "", session_id: "s" }),
+    )
+
+    const [session] = (await fetchSessions()).items
+    expect(session.byModel.map((entry) => entry.model)).toEqual([
+      "unknown",
+      "a",
+    ])
+
+    const filtered = await fetchSessionEvents(
+      "period=today&session_id=s&model=unknown",
+    )
+    expect(
+      filtered.items.map((e) => [e.created_at_ms, e.model, e.prev_ms]),
+    ).toEqual([
+      [ago(10), "unknown", ago(30)],
+      [ago(30), "unknown", null],
+    ])
+    expect(filtered).toMatchObject({ model: "unknown", total: 2 })
   })
 })
 
