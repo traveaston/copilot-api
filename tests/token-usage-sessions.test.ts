@@ -283,6 +283,37 @@ describe("sessions aggregates", () => {
     expect(items[0].first_ms).toBe(todayStart)
     expect(items[0].byModel[0].request_count).toBe(2)
   })
+
+  test("per-model costs stay apart when keys and models contain colons", async () => {
+    seed(
+      persistedEvent({
+        cost_currency: "USD",
+        created_at_ms: ago(20),
+        model: "z",
+        session_id: "x:y",
+        total_cost_nanos: 1_000_000_000,
+      }),
+      persistedEvent({
+        cost_currency: "USD",
+        created_at_ms: ago(10),
+        model: "y:z",
+        session_id: "x",
+        total_cost_nanos: 2_000_000_000,
+      }),
+    )
+
+    const { items } = await fetchSessions()
+
+    expect(
+      items.map((session) => [
+        session.key,
+        session.byModel.map((m) => m.costs.map((c) => c.total_cost_nanos)),
+      ]),
+    ).toEqual([
+      ["x", [[2_000_000_000]]],
+      ["x:y", [[1_000_000_000]]],
+    ])
+  })
 })
 
 describe("sessions paging", () => {

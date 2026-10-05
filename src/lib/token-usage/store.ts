@@ -1182,6 +1182,14 @@ function sessionIdentity(row: Record<string, unknown>): string {
   return `${row.sessionless === 1 ? 1 : 0}:${stringFromRow(row, "key")}`
 }
 
+/**
+ * A (session, model) map key. JSON keeps the two parts apart, since session
+ * keys and models can both contain ":".
+ */
+function sessionModelKey(row: Record<string, unknown>): string {
+  return JSON.stringify([sessionIdentity(row), stringFromRow(row, "model")])
+}
+
 function pushCost(
   map: Map<string, Array<TokenUsageCost>>,
   id: string,
@@ -1264,11 +1272,7 @@ function getSessionDetails(
   for (const row of costRows) pushCost(costs, sessionIdentity(row), row)
   const modelCosts = new Map<string, Array<TokenUsageCost>>()
   for (const row of modelCostRows) {
-    pushCost(
-      modelCosts,
-      `${sessionIdentity(row)}:${stringFromRow(row, "model")}`,
-      row,
-    )
+    pushCost(modelCosts, sessionModelKey(row), row)
   }
   const models = new Map<string, Array<TokenUsageSessionModelSummary>>()
   for (const row of modelRows) {
@@ -1277,10 +1281,7 @@ function getSessionDetails(
     models.set(id, [
       ...(models.get(id) ?? []),
       {
-        ...modelSummaryFromRow(
-          row,
-          modelCosts.get(`${id}:${stringFromRow(row, "model")}`) ?? [],
-        ),
+        ...modelSummaryFromRow(row, modelCosts.get(sessionModelKey(row)) ?? []),
         first_ms: numberFromRow(row, "first_ms"),
         last_ms: numberFromRow(row, "last_ms"),
         model,
