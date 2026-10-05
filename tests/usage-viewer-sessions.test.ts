@@ -2565,3 +2565,529 @@ describe("session copy controls", () => {
     expect(button?.textContent).toBe("trace-abc")
   })
 })
+
+// --- State survival across Refresh and period change (ticket 18) ---
+
+const OTHER = sessionOf({ key: "9f8e7d6c-other", last_ms: at(2026, 9, 29, 20) })
+const OTHER_ID = identityOf(OTHER)
+
+/** A loaded page holding `items`, with `session` open and two pages of its events loaded. */
+function survivalState(
+  items: TokenUsageSession[] = [MULTI, OTHER],
+  session: TokenUsageSession = MULTI,
+) {
+  const opened = toggleSession(
+    loadedState("sessions", sessionsPageOf({ items, total: items.length })),
+    session,
+  )
+  const identity = identityOf(session)
+  const first = applySessionEvents(opened.state, {
+    identity,
+    page: eventsPageOf({
+      has_more: true,
+      items: [eventOf({ id: 4 }), eventOf({ id: 3 })],
+      next_cursor: "3:3",
+      total: 4,
+    }),
+    requestId: opened.requests[0].requestId,
+  }).state
+  const more = showMoreEvents(first, identity)
+  return applySessionEvents(more.state, {
+    identity,
+    page: eventsPageOf({
+      items: [eventOf({ id: 2 }), eventOf({ id: 1 })],
+      total: 4,
+    }),
+    requestId: more.requests[0].requestId,
+  }).state
+}
+
+/** Runs a full load (or page move) to the point where its list page lands. */
+function landLoad(
+  state: ReturnType<typeof survivalState>,
+  reason: "refresh" | "period" | "page",
+  page: TokenUsageSessionsPage,
+) {
+  const started = startSessionsLoad(state, { page: page.page, reason })
+  return applySessionsPage(started.state, {
+    page,
+    requestId: started.requests[0].requestId,
+  })
+}
+
+describe("state survival: Refresh", () => {
+  test("an open session still on the page stays open and reloads its newest 50 with one request", () => {
+    const before = survivalState()
+    const started = startSessionsLoad(before, { page: 1, reason: "refresh" })
+    expect(started.requests.map((request) => request.kind)).toEqual([
+      "sessions",
+    ])
+    expect(started.state.expanded).toBe(before.expanded)
+
+    const landed = applySessionsPage(started.state, {
+      page: sessionsPageOf({ items: [MULTI, OTHER], total: 2 }),
+      requestId: started.requests[0].requestId,
+    })
+    const entry = landed.state.expanded[MULTI_ID]
+
+    expect(landed.requests).toEqual([
+      {
+        before: null,
+        identity: MULTI_ID,
+        key: MULTI.key,
+        kind: "session-events",
+        limit: 50,
+        mode: "replace",
+        model: null,
+        requestId: entry.requestId!,
+        sessionless: false,
+      },
+    ])
+    expect(entry.loading).toBe(true)
+    expect(entry.stale).toBe(true)
+    expect(entry.items.map((item) => item.id)).toEqual([4, 3, 2, 1])
+
+    const reloaded = applySessionEvents(landed.state, {
+      identity: MULTI_ID,
+      page: eventsPageOf({
+        has_more: true,
+        items: [eventOf({ id: 5 }), eventOf({ id: 4 })],
+        next_cursor: "4:4",
+        total: 5,
+      }),
+      requestId: entry.requestId!,
+    }).state.expanded[MULTI_ID]
+    expect(reloaded.items.map((item) => item.id)).toEqual([5, 4])
+    expect(reloaded).toMatchObject({
+      hasMore: true,
+      loading: false,
+      nextCursor: "4:4",
+      stale: false,
+      total: 5,
+    })
+  })
+})
+
+describe("state survival: sessions that move page", () => {
+  test("Refresh collapses an open session that moved to another page", () => {
+    let state = survivalState()
+    state = toggleSession(state, OTHER).state
+    const landed = landLoad(
+      state,
+      "refresh",
+      sessionsPageOf({ items: [OTHER], total: 21, total_pages: 2 }),
+    )
+
+    expect(Object.keys(landed.state.expanded)).toEqual([OTHER_ID])
+    expect(landed.requests).toMatchObject([
+      { identity: OTHER_ID, kind: "session-events" },
+    ])
+  })
+})
+
+describe("state survival: the model filter", () => {
+  function filteredState() {
+    const filtered = toggleModelFilter(survivalState(), MULTI_ID, MODEL_A)
+    return applySessionEvents(filtered.state, {
+      identity: MULTI_ID,
+      page: eventsPageOf({ items: [eventOf({ id: 9 })], model: MODEL_A }),
+      requestId: filtered.requests[0].requestId,
+    }).state
+  }
+  const reloadedWith = (byModel: TokenUsageSession["byModel"]) =>
+    landLoad(
+      filteredState(),
+      "refresh",
+      sessionsPageOf({ items: [{ ...MULTI, byModel }, OTHER], total: 2 }),
+    )
+
+  test("is kept while the reloaded card still lists the model among several", () => {
+    const landed = reloadedWith([
+      modelEntryOf(MODEL_B),
+      modelEntryOf(MODEL_A),
+      modelEntryOf("gemini-2.5-pro"),
+    ])
+
+    expect(landed.state.expanded[MULTI_ID].filter).toBe(MODEL_A)
+    expect(landed.requests).toMatchObject([
+      { identity: MULTI_ID, model: MODEL_A },
+    ])
+  })
+
+  test("clears, and the rows reload unfiltered, when the model is gone", () => {
+    const landed = reloadedWith([
+      modelEntryOf(MODEL_B),
+      modelEntryOf("gemini-2.5-pro"),
+    ])
+
+    expect(landed.state.expanded[MULTI_ID].filter).toBeNull()
+    expect(landed.requests).toMatchObject([{ identity: MULTI_ID, model: null }])
+  })
+
+  test("clears when the card is down to one model, even that one", () => {
+    const landed = reloadedWith([modelEntryOf(MODEL_A)])
+
+    expect(landed.state.expanded[MULTI_ID].filter).toBeNull()
+    expect(landed.requests).toMatchObject([{ identity: MULTI_ID, model: null }])
+  })
+})
+
+describe("state survival: period change", () => {
+  test("requests page 1 and keeps only the open sessions on it, each reloading once", () => {
+    let state = survivalState([MULTI, OTHER])
+    state = toggleSession(state, OTHER).state
+    const third = sessionOf({ key: "third-session" })
+    state = toggleSession(state, third).state
+
+    const started = startSessionsLoad(state, { page: 1, reason: "period" })
+    expect(started.requests).toMatchObject([
+      { kind: "sessions", page: 1, reason: "period" },
+    ])
+
+    const landed = applySessionsPage(started.state, {
+      page: sessionsPageOf({
+        items: [OTHER, MULTI],
+        period: "last_7_days",
+        total: 2,
+      }),
+      requestId: started.requests[0].requestId,
+    })
+
+    expect(Object.keys(landed.state.expanded).toSorted()).toEqual(
+      [MULTI_ID, OTHER_ID].toSorted(),
+    )
+    expect(landed.requests).toMatchObject([
+      { before: null, identity: OTHER_ID, mode: "replace" },
+      { before: null, identity: MULTI_ID, mode: "replace" },
+    ])
+    const ids = landed.requests.map((request) => request.requestId)
+    expect(new Set(ids).size).toBe(2)
+    expect(landed.state.expanded[MULTI_ID]).toMatchObject({
+      loading: true,
+      requestId: ids[1],
+      stale: true,
+    })
+    expect(landed.state.expanded[MULTI_ID].items).toHaveLength(4)
+  })
+})
+
+describe("state survival: stale events responses", () => {
+  test("a response issued before the reloaded page landed is dropped", () => {
+    const loaded = survivalState()
+    const refreshed = applySessionEvents(
+      landLoad(loaded, "refresh", sessionsPageOf({ items: [MULTI], total: 1 }))
+        .state,
+      {
+        identity: MULTI_ID,
+        page: eventsPageOf({ items: [eventOf({ id: 99 })] }),
+        requestId: loaded.expanded[MULTI_ID].requestId!,
+      },
+    )
+    expect(refreshed.state.expanded[MULTI_ID]).toMatchObject({
+      loading: true,
+      stale: true,
+    })
+    expect(
+      refreshed.state.expanded[MULTI_ID].items.map((item) => item.id),
+    ).toEqual([4, 3, 2, 1])
+  })
+
+  test("an in-flight Show more is dropped once a period change lands", () => {
+    const opened = toggleSession(loadedState("sessions"), SESSION)
+    const loaded = applySessionEvents(opened.state, {
+      identity: SESSION_ID,
+      page: eventsPageOf({ has_more: true, next_cursor: "1:1", total: 2 }),
+      requestId: opened.requests[0].requestId,
+    }).state
+    const inFlight = showMoreEvents(loaded, SESSION_ID)
+    const landed = landLoad(inFlight.state, "period", sessionsPageOf())
+
+    const late = applySessionEvents(landed.state, {
+      identity: SESSION_ID,
+      page: eventsPageOf({ items: [eventOf({ id: 2 })] }),
+      requestId: inFlight.requests[0].requestId,
+    })
+    expect(late.state).toBe(landed.state)
+    const lateError = applySessionEventsError(landed.state, {
+      identity: SESSION_ID,
+      message: "old period",
+      requestId: inFlight.requests[0].requestId,
+    })
+    expect(lateError.state).toBe(landed.state)
+  })
+
+  test("a late response for a session that collapsed on landing is dropped", () => {
+    const loaded = survivalState()
+    const landed = landLoad(
+      loaded,
+      "refresh",
+      sessionsPageOf({ items: [OTHER], total: 21, total_pages: 2 }),
+    )
+    const late = applySessionEvents(landed.state, {
+      identity: MULTI_ID,
+      page: eventsPageOf(),
+      requestId: loaded.expanded[MULTI_ID].requestId!,
+    })
+
+    expect(late.state).toBe(landed.state)
+    expect(late.state.expanded[MULTI_ID]).toBeUndefined()
+  })
+})
+
+describe("state survival: failed loads", () => {
+  function failLoad(
+    state: ReturnType<typeof survivalState>,
+    reason: "refresh" | "period" | "page",
+    page: number,
+  ) {
+    const started = startSessionsLoad(state, { page, reason })
+    return applySessionsError(started.state, {
+      message: "Gateway timeout",
+      missing: false,
+      requestId: started.requests[0].requestId,
+    })
+  }
+
+  for (const [reason, page] of [
+    ["refresh", 1],
+    ["period", 1],
+    ["page", 2],
+  ] as const) {
+    test(`a failed ${reason} keeps the loaded list and its open sessions as they were`, () => {
+      const filtered = toggleModelFilter(survivalState(), MULTI_ID, MODEL_A)
+      const before = applySessionEvents(filtered.state, {
+        identity: MULTI_ID,
+        page: eventsPageOf({
+          has_more: true,
+          items: [eventOf({ id: 7 })],
+          next_cursor: "7:7",
+          total: 3,
+        }),
+        requestId: filtered.requests[0].requestId,
+      }).state
+      const failed = failLoad(before, reason, page)
+
+      expect(failed.requests).toEqual([])
+      expect(failed.state.page).toBe(before.page)
+      expect(failed.state.expanded).toBe(before.expanded)
+      expect(failed.state.expanded[MULTI_ID]).toMatchObject({
+        filter: MODEL_A,
+        hasMore: true,
+        loading: false,
+        nextCursor: "7:7",
+        stale: false,
+      })
+      expect(failed.state.error).toBe("Gateway timeout")
+    })
+  }
+
+  test("the error shows above the kept list with its session still open", () => {
+    const failed = failLoad(survivalState(), "refresh", 1).state
+    const root = parse(
+      renderSessionsBody(failed, {
+        eventsBody: "",
+        nowMs: NOW,
+        renderEmptyState: (message) => `<p>${message}</p>`,
+        renderError: (message, title) =>
+          `<div role="alert">${title}: ${message}</div>`,
+      }),
+    )
+    const panel = root.querySelector('[role="tabpanel"]')
+
+    expect(panel?.firstElementChild?.textContent).toBe(
+      "Sessions failed: Gateway timeout",
+    )
+    expect(
+      [...root.querySelectorAll("article")].map((card) =>
+        card.getAttribute("data-expanded"),
+      ),
+    ).toEqual(["true", "false"])
+    expect(root.querySelectorAll("tr.session-event-row")).toHaveLength(4)
+  })
+})
+
+describe("state survival: lost page", () => {
+  function lostRefresh() {
+    let state = survivalState([MULTI, OTHER])
+    state = toggleSession(state, OTHER).state
+    const started = startSessionsLoad(state, { page: 3, reason: "refresh" })
+    const lost = applySessionsPage(started.state, {
+      page: sessionsPageOf({ items: [], page: 3, total: 30, total_pages: 2 }),
+      requestId: started.requests[0].requestId,
+    })
+    return { lost, state }
+  }
+
+  test("re-fetches the last page once, leaving the open sessions alone until it lands", () => {
+    const { lost, state } = lostRefresh()
+
+    expect(lost.requests).toMatchObject([
+      { kind: "sessions", page: 2, reason: "refresh" },
+    ])
+    expect(lost.state.expanded).toBe(state.expanded)
+  })
+
+  test("survivors are applied to the re-fetched page", () => {
+    const { lost } = lostRefresh()
+    const landed = applySessionsPage(lost.state, {
+      page: sessionsPageOf({
+        items: [MULTI],
+        page: 2,
+        total: 30,
+        total_pages: 2,
+      }),
+      requestId: lost.requests[0].requestId,
+    })
+
+    expect(Object.keys(landed.state.expanded)).toEqual([MULTI_ID])
+    expect(landed.requests).toMatchObject([
+      { identity: MULTI_ID, kind: "session-events", mode: "replace" },
+    ])
+    expect(landed.state.expanded[MULTI_ID].stale).toBe(true)
+  })
+
+  test("a re-fetch that is lost too lands as it is, with no second re-fetch", () => {
+    const { lost } = lostRefresh()
+    const stillLost = sessionsPageOf({
+      items: [],
+      page: 2,
+      total: 10,
+      total_pages: 1,
+    })
+    const landed = applySessionsPage(lost.state, {
+      page: stillLost,
+      requestId: lost.requests[0].requestId,
+    })
+
+    expect(landed.requests).toEqual([])
+    expect(landed.state.page).toBe(stillLost)
+    expect(landed.state.expanded).toEqual({})
+  })
+})
+
+describe("state survival: stale rows while a survivor reloads", () => {
+  test("old rows are marked stale and the footer loads until the newest rows replace them", () => {
+    const landed = landLoad(
+      survivalState(),
+      "refresh",
+      sessionsPageOf({ items: [MULTI, OTHER], total: 2 }),
+    )
+    const render = (state: typeof landed.state) =>
+      parse(
+        renderSessionExpansion(MULTI, state.expanded[MULTI_ID], {
+          nowMs: NOW,
+        }),
+      )
+
+    const reloading = render(landed.state)
+    expect(
+      reloading
+        .querySelector(".session-events-wrap")
+        ?.getAttribute("data-stale"),
+    ).toBe("true")
+    const rows = [...reloading.querySelectorAll("tr.session-event-row")]
+    expect(rows).toHaveLength(4)
+    expect(
+      rows.every(
+        (row) =>
+          row.firstElementChild?.firstElementChild?.className
+          === "session-event-model",
+      ),
+    ).toBe(true)
+    expect(reloading.querySelector(".session-events-footer")?.textContent).toBe(
+      "Loading events...",
+    )
+
+    const reloaded = render(
+      applySessionEvents(landed.state, {
+        identity: MULTI_ID,
+        page: eventsPageOf(),
+        requestId: landed.state.expanded[MULTI_ID].requestId!,
+      }).state,
+    )
+    expect(
+      reloaded
+        .querySelector(".session-events-wrap")
+        ?.hasAttribute("data-stale"),
+    ).toBe(false)
+    expect(reloaded.querySelectorAll("tr.session-event-row")).toHaveLength(1)
+  })
+})
+
+describe("state survival: a failed survivor reload", () => {
+  test("keeps the old rows stale with the error, and Retry repeats the reload", () => {
+    const landed = landLoad(
+      survivalState(),
+      "period",
+      sessionsPageOf({ items: [MULTI], total: 1 }),
+    )
+    const failed = applySessionEventsError(landed.state, {
+      identity: MULTI_ID,
+      message: "boom",
+      requestId: landed.requests[0].requestId,
+    }).state
+    expect(failed.expanded[MULTI_ID]).toMatchObject({
+      error: "boom",
+      loading: false,
+      stale: true,
+    })
+    expect(failed.expanded[MULTI_ID].items).toHaveLength(4)
+
+    const retry = retryEvents(failed, MULTI_ID)
+    expect(retry.requests).toMatchObject([
+      { before: null, identity: MULTI_ID, mode: "replace", model: null },
+    ])
+    const done = applySessionEvents(retry.state, {
+      identity: MULTI_ID,
+      page: eventsPageOf(),
+      requestId: retry.requests[0].requestId,
+    }).state.expanded[MULTI_ID]
+    expect(done.items).toHaveLength(1)
+    expect(done.stale).toBe(false)
+  })
+})
+
+describe("state survival: the other §5.10 rows", () => {
+  test("a first load lands page 1 with nothing open and no events requests", () => {
+    const started = startSessionsLoad(createSessionsState("sessions"), {
+      page: 1,
+      reason: "initial",
+    })
+    const landed = applySessionsPage(started.state, {
+      page: sessionsPageOf({ items: [MULTI, OTHER], total: 2 }),
+      requestId: started.requests[0].requestId,
+    })
+
+    expect(started.requests).toMatchObject([{ page: 1 }])
+    expect(landed.requests).toEqual([])
+    expect(landed.state.expanded).toEqual({})
+  })
+
+  test("a page move keeps sessions open until the new page lands, then collapses all", () => {
+    const before = survivalState()
+    const started = startSessionsLoad(before, { page: 2, reason: "page" })
+    expect(started.state.expanded).toBe(before.expanded)
+
+    const landed = applySessionsPage(started.state, {
+      page: sessionsPageOf({
+        items: [MULTI, OTHER],
+        page: 2,
+        total: 22,
+        total_pages: 2,
+      }),
+      requestId: started.requests[0].requestId,
+    })
+    expect(landed.requests).toEqual([])
+    expect(landed.state.expanded).toEqual({})
+  })
+
+  test("a tab switch either way keeps the page, open sessions, filter and rows", () => {
+    const before = toggleModelFilter(survivalState(), MULTI_ID, MODEL_A).state
+    const away = setView(before, "events")
+    const back = setView(away.state, "sessions")
+
+    expect([away.requests, back.requests]).toEqual([[], []])
+    expect(back.state.page).toBe(before.page)
+    expect(back.state.expanded).toBe(before.expanded)
+  })
+})
