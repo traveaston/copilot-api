@@ -601,6 +601,11 @@ function createEmptyDailySummary(
   }
 }
 
+/** Clamps a requested page size, or an events limit, to 1..100. */
+function clampPageSize(value: number): number {
+  return Math.min(100, Math.max(1, Math.floor(value)))
+}
+
 export function createEmptyEventsPage(input: {
   page: number
   pageSize: number
@@ -608,7 +613,7 @@ export function createEmptyEventsPage(input: {
 }): TokenUsageEventsPage {
   const range = getPeriodRange(input.period)
   const page = Math.max(1, Math.floor(input.page))
-  const pageSize = Math.min(100, Math.max(1, Math.floor(input.pageSize)))
+  const pageSize = clampPageSize(input.pageSize)
 
   return {
     items: [],
@@ -1106,7 +1111,7 @@ export async function getTokenUsageEventsPage(input: {
 
   await flushTokenUsageEvents()
   const page = Math.max(1, Math.floor(input.page))
-  const pageSize = Math.min(100, Math.max(1, Math.floor(input.pageSize)))
+  const pageSize = clampPageSize(input.pageSize)
   const offset = (page - 1) * pageSize
   const db = await getDb()
   const range = getPeriodRangeFromDb(db, input.period)
@@ -1306,7 +1311,7 @@ export async function getTokenUsageSessionsPage(input: {
 
   await flushTokenUsageEvents()
   const page = Math.max(1, Math.floor(input.page))
-  const pageSize = Math.min(100, Math.max(1, Math.floor(input.pageSize)))
+  const pageSize = clampPageSize(input.pageSize)
   const db = await getDb()
   const range = getPeriodRangeFromDb(db, input.period)
 
@@ -1370,7 +1375,7 @@ export async function getTokenUsageSessionEventsPage(
   }
 
   await flushTokenUsageEvents()
-  const limit = Math.min(100, Math.max(1, Math.floor(input.limit)))
+  const limit = clampPageSize(input.limit)
   const db = await getDb()
   const range = getPeriodRangeFromDb(db, input.period)
   const keyFilter =
