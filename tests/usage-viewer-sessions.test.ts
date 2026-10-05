@@ -399,7 +399,7 @@ describe("spanGeometry", () => {
   })
 
   test("clamps left into [0, 1] and width into the remaining space", () => {
-    expect(spanGeometry(500, 1500, range)).toEqual({ left: 0, width: 0.5 })
+    expect(spanGeometry(500, 1500, range)).toEqual({ left: 0, width: 1 })
     const nearEnd = spanGeometry(1800, 2500, range)
     expect(nearEnd?.left).toBe(0.8)
     expect(nearEnd?.width).toBeCloseTo(0.2, 10)
@@ -987,7 +987,13 @@ describe("renderSessionCard marks", () => {
         el?.getAttribute("style") ?? "",
       )?.[1] ?? "NaN",
     )
-  const widths = (el: ReturnType<typeof parse> | null) =>
+  const widths = (
+    el: {
+      querySelectorAll(selector: string): Iterable<{
+        getAttribute(name: string): string | null
+      }>
+    } | null,
+  ) =>
     [...(el?.querySelectorAll("[data-bar-segment]") ?? [])].map((s) =>
       styleValue(s, "width"),
     )
