@@ -3259,6 +3259,13 @@ describe("focus restoration", () => {
       sessionSessionless: "false",
       sessionModel: "gpt-5",
     })
+    expect(
+      focusTargetOf({
+        sessionAction: "copy-trace",
+        sessionEventId: "7",
+        traceId: "trace-shared",
+      }),
+    ).toEqual({ sessionAction: "copy-trace", sessionEventId: "7" })
   })
 
   test("focusTargetOf returns null for a control that is not a session control", () => {
@@ -3276,16 +3283,22 @@ describe("focus restoration", () => {
     expect(chooseFocusIndex(target, candidates)).toBe(2)
   })
 
-  test("trace buttons of one session are told apart by trace id", () => {
-    const trace = (id: string) => ({
-      sessionAction: "copy-trace",
-      sessionKey: "k1",
-      sessionSessionless: "false",
-      traceId: id,
-    })
-    expect(
-      chooseFocusIndex(focusTargetOf(trace("b")), [trace("a"), trace("b")]),
-    ).toBe(1)
+  test("trace buttons sharing a trace id are told apart by their event", () => {
+    // Every event of a sessionless session shares its trace id.
+    const root = parse(
+      `<table>${renderEventRows(
+        [
+          eventOf({ id: 8, trace_id: "trace-shared" }),
+          eventOf({ id: 7, trace_id: "trace-shared" }),
+        ],
+        { multiDay: false, nowMs: NOW, sessionKey: "k1", sessionless: true },
+      )}</table>`,
+    )
+    const datasets = [...root.querySelectorAll("button")].map(
+      (button) => button.dataset,
+    )
+
+    expect(chooseFocusIndex(focusTargetOf(datasets[1]), datasets)).toBe(1)
   })
 
   test("falls back to the target session's card header when the control is gone", () => {

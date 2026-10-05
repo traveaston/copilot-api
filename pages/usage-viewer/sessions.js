@@ -1126,7 +1126,7 @@ export function renderEventsFooter(entry) {
  * The events `<tbody>`: the single-model sub-header, then one row per event,
  * with day dividers in a multi-day session.
  * @param {ReadonlyArray<TokenUsageSessionEventRecord & { prev_ms?: number | null }>} items
- * @param {{ multiDay: boolean, multiModel?: boolean, nowMs: number, sessionKey?: string, sessionless?: boolean }} options `sessionKey` and `sessionless` stamp each trace button with its session, for focus restoration. `multiModel` swaps the sub-header to "Events" with blank number columns, since the breakdown above carries the labels.
+ * @param {{ multiDay: boolean, multiModel?: boolean, nowMs: number, sessionKey?: string, sessionless?: boolean }} options `sessionKey` and `sessionless` stamp each trace button with its session, and each also carries its event's id, for focus restoration. `multiModel` swaps the sub-header to "Events" with blank number columns, since the breakdown above carries the labels.
  * @returns {string}
  */
 export function renderEventRows(
@@ -1185,7 +1185,7 @@ export function renderEventRows(
 <td class="session-num">${formatInteger(event.cache_creation_input_tokens)}</td>
 <td class="session-num session-total">${formatInteger(event.total_tokens)}</td>
 <td class="session-num session-event-cost">${formatCostList(event.cost ? [event.cost] : null)}</td>
-<td><button type="button" class="session-trace" title="Copy trace id" data-session-action="copy-trace"${owner} data-trace-id="${trace}">${trace}</button></td>
+<td><button type="button" class="session-trace" title="Copy trace id" data-session-action="copy-trace"${owner} data-session-event-id="${event.id}" data-trace-id="${trace}">${trace}</button></td>
 </tr>`
   })
   return `<tbody class="session-events-body"><tr class="session-events-subheader">${header}</tr>${rows.join("")}</tbody>`
@@ -1351,13 +1351,14 @@ const FOCUS_FIELDS = [
   "sessionSessionless",
   "sessionModel",
   "sessionView",
-  "traceId",
+  "sessionEventId",
 ]
 
 /**
  * The attributes that identify a session control across renders, or null for an
- * element that is not one. `traceId` is included so one session's trace buttons
- * stay distinct.
+ * element that is not one. `sessionEventId` is included so one session's trace
+ * buttons stay distinct: its events can share a trace id, and a sessionless
+ * session's events always do.
  * @param {Record<string, string | undefined>} dataset a control's `dataset`
  * @returns {Record<string, string> | null}
  */
