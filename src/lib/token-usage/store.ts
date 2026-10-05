@@ -82,6 +82,20 @@ export interface TokenUsageModelSummary extends TokenUsageTotals {
   model: string
 }
 
+export interface TokenUsageSessionModelSummary extends TokenUsageModelSummary {
+  first_ms: number
+  last_ms: number
+}
+
+export interface TokenUsageSession extends TokenUsageTotals {
+  byModel: Array<TokenUsageSessionModelSummary>
+  endpoints: Array<TokenUsageEndpoint>
+  first_ms: number
+  key: string
+  last_ms: number
+  sessionless: boolean
+}
+
 export interface TokenUsageEventRecord {
   cache_creation_input_tokens: number
   cache_read_input_tokens: number
@@ -100,6 +114,11 @@ export interface TokenUsageEventRecord {
   total_tokens: number
   trace_id: string
   user_id: string
+}
+
+export interface TokenUsageSessionsPage
+  extends Omit<TokenUsageEventsPage, "items"> {
+  items: Array<TokenUsageSession>
 }
 
 export interface TokenUsageSummary {
@@ -556,7 +575,7 @@ function createEmptyDailySummary(
   }
 }
 
-function createEmptyEventsPage(input: {
+export function createEmptyEventsPage(input: {
   page: number
   pageSize: number
   period: TokenUsagePeriod
@@ -579,6 +598,14 @@ function createEmptyEventsPage(input: {
     total: 0,
     total_pages: 1,
   }
+}
+
+export function createEmptySessionsPage(input: {
+  page: number
+  pageSize: number
+  period: TokenUsagePeriod
+}): TokenUsageSessionsPage {
+  return createEmptyEventsPage(input) as unknown as TokenUsageSessionsPage
 }
 
 function rangePayload(range: { endMs: number; startMs: number }) {
@@ -1071,6 +1098,209 @@ export async function getTokenUsageEventsPage(input: {
       start_ms: range.startMs,
       start_utc: new Date(range.startMs).toISOString(),
     },
+    total,
+    total_pages: Math.max(1, Math.ceil(total / pageSize)),
+  }
+}
+
+const SESSION_KEY_SQL =
+  "CASE WHEN session_id = '' THEN trace_id ELSE session_id END"
+
+const TOTALS_SELECT_SQL = `
+      COUNT(*) AS request_count,
+      COALESCE(SUM(input_tokens), 0) AS input_tokens,
+      COALESCE(SUM(output_tokens), 0) AS output_tokens,
+      COALESCE(SUM(cache_read_input_tokens), 0) AS cache_read_input_tokens,
+      COALESCE(SUM(cache_creation_input_tokens), 0) AS cache_creation_input_tokens,
+      SUM(total_nano_aiu) AS total_nano_aiu,
+      COALESCE(SUM(total_tokens), 0) AS total_tokens,
+      MIN(created_at_ms) AS first_ms,
+      MAX(created_at_ms) AS last_ms`
+
+function sessionIdentity(row: Record<string, unknown>): string {
+  return `${row.sessionless === 1 ? 1 : 0}:${stringFromRow(row, "key")}`
+}
+
+function pushCost(
+  map: Map<string, Array<TokenUsageCost>>,
+  id: string,
+  row: Record<string, unknown>,
+): void {
+  const cost = costFromRow(row)
+  if (cost) {
+    map.set(id, [...(map.get(id) ?? []), cost])
+  }
+}
+
+interface SessionDetails {
+  costs: Map<string, Array<TokenUsageCost>>
+  endpoints: Map<string, Array<TokenUsageEndpoint>>
+  models: Map<string, Array<TokenUsageSessionModelSummary>>
+}
+
+/** Per-session and per-(session, model) aggregates for the sessions on a page. */
+function getSessionDetails(
+  db: SqliteDatabase,
+  range: { endMs: number; startMs: number },
+  sessions: Array<Record<string, unknown>>,
+): SessionDetails {
+  const sessionIds = sessions
+    .filter((row) => row.sessionless !== 1)
+    .map((row) => stringFromRow(row, "key"))
+  const traceIds = sessions
+    .filter((row) => row.sessionless === 1)
+    .map((row) => stringFromRow(row, "key"))
+  const marks = (values: Array<string>) => values.map(() => "?").join(", ")
+  const clauses = [
+    ...(sessionIds.length > 0 ? [`session_id IN (${marks(sessionIds)})`] : []),
+    ...(traceIds.length > 0 ?
+      [`(session_id = '' AND trace_id IN (${marks(traceIds)}))`]
+    : []),
+  ]
+  const where = `created_at_ms >= ? AND created_at_ms < ? AND (${clauses.join(" OR ")})`
+  const params = [range.startMs, range.endMs, ...sessionIds, ...traceIds]
+  const identity = `(session_id = '') AS sessionless, ${SESSION_KEY_SQL} AS key`
+
+  const costRows = db
+    .prepare(
+      `SELECT ${identity}, cost_currency,
+        COALESCE(SUM(total_cost_nanos), 0) AS total_cost_nanos
+      FROM token_usage_events
+      WHERE ${where} AND cost_currency IS NOT NULL AND total_cost_nanos IS NOT NULL
+      GROUP BY sessionless, key, cost_currency
+      ORDER BY cost_currency ASC`,
+    )
+    .all(...params) as Array<Record<string, unknown>>
+  const modelRows = db
+    .prepare(
+      `SELECT ${identity}, model, ${TOTALS_SELECT_SQL}
+      FROM token_usage_events
+      WHERE ${where}
+      GROUP BY sessionless, key, model
+      ORDER BY total_tokens DESC, model ASC`,
+    )
+    .all(...params) as Array<Record<string, unknown>>
+  const modelCostRows = db
+    .prepare(
+      `SELECT ${identity}, model, cost_currency,
+        COALESCE(SUM(total_cost_nanos), 0) AS total_cost_nanos
+      FROM token_usage_events
+      WHERE ${where} AND cost_currency IS NOT NULL AND total_cost_nanos IS NOT NULL
+      GROUP BY sessionless, key, model, cost_currency
+      ORDER BY cost_currency ASC`,
+    )
+    .all(...params) as Array<Record<string, unknown>>
+  const endpointRows = db
+    .prepare(
+      `SELECT ${identity}, GROUP_CONCAT(DISTINCT endpoint) AS endpoints
+      FROM token_usage_events
+      WHERE ${where}
+      GROUP BY sessionless, key`,
+    )
+    .all(...params) as Array<Record<string, unknown>>
+
+  const costs = new Map<string, Array<TokenUsageCost>>()
+  for (const row of costRows) pushCost(costs, sessionIdentity(row), row)
+  const modelCosts = new Map<string, Array<TokenUsageCost>>()
+  for (const row of modelCostRows) {
+    pushCost(
+      modelCosts,
+      `${sessionIdentity(row)}:${stringFromRow(row, "model")}`,
+      row,
+    )
+  }
+  const models = new Map<string, Array<TokenUsageSessionModelSummary>>()
+  for (const row of modelRows) {
+    const id = sessionIdentity(row)
+    const model = stringFromRow(row, "model") || "unknown"
+    models.set(id, [
+      ...(models.get(id) ?? []),
+      {
+        ...modelSummaryFromRow(
+          row,
+          modelCosts.get(`${id}:${stringFromRow(row, "model")}`) ?? [],
+        ),
+        first_ms: numberFromRow(row, "first_ms"),
+        last_ms: numberFromRow(row, "last_ms"),
+        model,
+      },
+    ])
+  }
+  const endpoints = new Map<string, Array<TokenUsageEndpoint>>()
+  for (const row of endpointRows) {
+    endpoints.set(
+      sessionIdentity(row),
+      stringFromRow(row, "endpoints")
+        .split(",")
+        .sort() as Array<TokenUsageEndpoint>,
+    )
+  }
+
+  return { costs, endpoints, models }
+}
+
+export async function getTokenUsageSessionsPage(input: {
+  page: number
+  pageSize: number
+  period: TokenUsagePeriod
+}): Promise<TokenUsageSessionsPage> {
+  if (!isTokenUsageStorageEnabled()) {
+    return createEmptySessionsPage(input)
+  }
+
+  await flushTokenUsageEvents()
+  const page = Math.max(1, Math.floor(input.page))
+  const pageSize = Math.min(100, Math.max(1, Math.floor(input.pageSize)))
+  const db = await getDb()
+  const range = getPeriodRangeFromDb(db, input.period)
+
+  const totalRow = db
+    .prepare(
+      `SELECT COUNT(*) AS total FROM (
+        SELECT 1 FROM token_usage_events
+        WHERE created_at_ms >= ? AND created_at_ms < ?
+        GROUP BY (session_id = ''), ${SESSION_KEY_SQL}
+      )`,
+    )
+    .get(range.startMs, range.endMs) as Record<string, unknown> | undefined
+  const total = numberFromRow(totalRow, "total")
+
+  const sessionRows = db
+    .prepare(
+      `SELECT (session_id = '') AS sessionless, ${SESSION_KEY_SQL} AS key,
+        ${TOTALS_SELECT_SQL}
+      FROM token_usage_events
+      WHERE created_at_ms >= ? AND created_at_ms < ?
+      GROUP BY sessionless, key
+      ORDER BY last_ms DESC, key ASC, sessionless ASC
+      LIMIT ? OFFSET ?`,
+    )
+    .all(range.startMs, range.endMs, pageSize, (page - 1) * pageSize) as Array<
+    Record<string, unknown>
+  >
+
+  const details: SessionDetails =
+    sessionRows.length > 0 ?
+      getSessionDetails(db, range, sessionRows)
+    : { costs: new Map(), endpoints: new Map(), models: new Map() }
+
+  return {
+    items: sessionRows.map((row) => {
+      const id = sessionIdentity(row)
+      return {
+        ...totalsFromRow(row, details.costs.get(id) ?? []),
+        byModel: details.models.get(id) ?? [],
+        endpoints: details.endpoints.get(id) ?? [],
+        first_ms: numberFromRow(row, "first_ms"),
+        key: stringFromRow(row, "key"),
+        last_ms: numberFromRow(row, "last_ms"),
+        sessionless: row.sessionless === 1,
+      }
+    }),
+    page,
+    page_size: pageSize,
+    period: input.period,
+    range: rangePayload(range),
     total,
     total_pages: Math.max(1, Math.ceil(total / pageSize)),
   }
