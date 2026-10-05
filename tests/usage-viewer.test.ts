@@ -4,6 +4,8 @@ import { runInNewContext } from "node:vm"
 import { Window } from "happy-dom"
 import type { TokenUsageSummary } from "../desktop/src/types/ipc"
 
+import { CURRENCY_SYMBOLS } from "../pages/usage-viewer/sessions.js"
+
 const pagePath = new URL("../pages/index.html", import.meta.url)
 
 async function readUsageViewerPage(): Promise<string> {
@@ -549,5 +551,45 @@ describe("usage viewer detailed response formatter", () => {
     expect(renderDetailedData({ response: [null] })).toContain(
       "Copilot Usage API Response",
     )
+  })
+})
+
+describe("usage viewer sessions module bridge", () => {
+  test("loads the module just before the inline script", async () => {
+    const html = await readUsageViewerPage()
+    const bridge =
+      '<script type="module">import * as sessions from "./usage-viewer/sessions.js"; window.usageViewerSessions = sessions;</script>'
+    const bridgeIndex = html.indexOf(bridge)
+    const inlineIndex = html.indexOf(
+      "<script>\n      document.addEventListener",
+    )
+
+    expect(bridgeIndex).toBeGreaterThan(-1)
+    expect(inlineIndex).toBeGreaterThan(bridgeIndex)
+    expect(html.slice(bridgeIndex + bridge.length, inlineIndex).trim()).toBe("")
+  })
+
+  test("init reads the bridge once", async () => {
+    const html = await readUsageViewerPage()
+
+    expect(html).toContain("let usageViewerSessions = null;")
+    expect(
+      html.split("usageViewerSessions = window.usageViewerSessions ?? null")
+        .length,
+    ).toBe(2)
+  })
+
+  test("module symbols match the inline formatCurrencyAmount map", async () => {
+    const html = await readUsageViewerPage()
+    const body = extractInlineFunctionRange(
+      html,
+      "        function formatCurrencyAmount(currency, amount) {",
+      "        const normalizedCurrency",
+    )
+    const symbols = runInNewContext(
+      `(${body.match(/const symbols = (\{[\s\S]*?\});/)?.[1] ?? "null"})`,
+    ) as Record<string, string>
+
+    expect(CURRENCY_SYMBOLS).toEqual(symbols)
   })
 })
