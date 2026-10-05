@@ -636,7 +636,7 @@ export function createEmptySessionsPage(input: {
   pageSize: number
   period: TokenUsagePeriod
 }): TokenUsageSessionsPage {
-  return createEmptyEventsPage(input) as unknown as TokenUsageSessionsPage
+  return { ...createEmptyEventsPage(input), items: [] }
 }
 
 export function createEmptySessionEventsPage(
