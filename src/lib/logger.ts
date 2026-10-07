@@ -295,13 +295,15 @@ export const createHandlerLogger = (name: string): ConsolaInstance => {
 
       const context = requestContext.getStore()
       const traceId = context?.traceId
+      const sessionId = context?.sessionId
       const date = logObj.date
       const dateKey = date.toLocaleDateString("sv-SE")
       const timestamp = date.toLocaleString("sv-SE", { hour12: false })
       const filePath = path.join(getLogDir(), `${sanitizedName}-${dateKey}.log`)
       const message = formatArgs(logObj.args as Array<unknown>)
       const traceIdStr = traceId ? ` [${traceId}]` : ""
-      const line = `[${timestamp}] [${logObj.type}] [${logObj.tag || name}]${traceIdStr}${
+      const sessionIdStr = sessionId ? ` [session:${sessionId}]` : ""
+      const line = `[${timestamp}] [${logObj.type}] [${logObj.tag || name}]${traceIdStr}${sessionIdStr}${
         message ? ` ${message}` : ""
       }`
 

@@ -38,6 +38,7 @@ import {
 import { HTTPError } from "~/lib/error"
 import { createHandlerLogger, debugJson, debugLazy } from "~/lib/logger"
 import { resolveProviderConfig } from "~/lib/provider-resolver"
+import { requestContext, setRequestSessionId } from "~/lib/request-context"
 import { writeSSEIfConnected } from "~/lib/sse"
 import { resolveBridgeToolSearchName } from "~/lib/tool-search"
 import {
@@ -49,7 +50,11 @@ import {
   type TokenUsageEndpoint,
   type UsageTokens,
 } from "~/lib/token-usage"
-import { isResponsesStream, parseUserIdMetadata } from "~/lib/utils"
+import {
+  getRootSessionId,
+  isResponsesStream,
+  parseUserIdMetadata,
+} from "~/lib/utils"
 import {
   translateToAnthropic,
   translateToOpenAI,
@@ -140,6 +145,11 @@ export async function handleProviderMessagesForProvider(
   },
 ): Promise<Response> {
   const { payload, provider, usageEndpoint } = options
+  // The top-level messages handler may already have set it before forwarding.
+  if (!requestContext.getStore()?.sessionId) {
+    setRequestSessionId(getRootSessionId(payload, c))
+  }
+
   const configuredProvider =
     await providerMessagesHandlerDependencies.resolveProviderConfig(provider)
   if (!configuredProvider) {

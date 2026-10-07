@@ -9,6 +9,7 @@ import {
 import { createHandlerLogger, debugJson, debugJsonTail } from "~/lib/logger"
 import { findEndpointModel } from "~/lib/models"
 import { resolveConfiguredProviderModelAlias } from "~/lib/provider-resolver"
+import { setRequestSessionId } from "~/lib/request-context"
 import { writeSSEIfConnected } from "~/lib/sse"
 import { isCodexUserAgent } from "~/routes/models/codex-models"
 import {
@@ -108,6 +109,7 @@ export const handleResponses = async (c: Context) => {
   logger.debug("Generated request ID:", requestId)
 
   const fallbackSessionId = sessionId ?? getUUID(requestId)
+  setRequestSessionId(fallbackSessionId)
   logger.debug("Extracted session ID:", fallbackSessionId)
   const selectedModel = responsesHandlerDependencies.findEndpointModel(
     payload.model,

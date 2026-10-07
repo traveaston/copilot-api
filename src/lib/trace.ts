@@ -12,9 +12,12 @@ import {
 } from "./request-context"
 
 export function formatErrorContext(
-  store: Pick<RequestContext, "traceId"> | undefined,
+  store: Pick<RequestContext, "traceId" | "sessionId"> | undefined,
 ): string | undefined {
-  return store?.traceId ? `[trace: ${store.traceId}]` : undefined
+  const parts: Array<string> = []
+  if (store?.traceId) parts.push(`trace: ${store.traceId}`)
+  if (store?.sessionId) parts.push(`session: ${store.sessionId}`)
+  return parts.length > 0 ? `[${parts.join(", ")}]` : undefined
 }
 
 const withErrorContext = (reporter: ConsolaReporter): ConsolaReporter => ({
@@ -34,8 +37,8 @@ const withErrorContext = (reporter: ConsolaReporter): ConsolaReporter => ({
 
 const instancesWithErrorContext = new WeakSet<ConsolaInstance>()
 
-// Prefix error and fatal output with the active request's trace id, so a
-// console error can be matched to its handler log lines.
+// Prefix error and fatal output with the active request's trace and session
+// ids, so a console error can be matched to its handler log lines.
 export function installConsolaErrorContext(
   instance: ConsolaInstance = consola,
 ): void {

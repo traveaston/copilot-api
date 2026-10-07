@@ -3,7 +3,11 @@ import consola, { type LogObject } from "consola"
 import { Hono } from "hono"
 import { streamSSE } from "hono/streaming"
 
-import { requestContext, type RequestContext } from "~/lib/request-context"
+import {
+  requestContext,
+  setRequestSessionId,
+  type RequestContext,
+} from "~/lib/request-context"
 import {
   formatErrorContext,
   installConsolaErrorContext,
@@ -70,6 +74,29 @@ describe("formatErrorContext", () => {
       "[trace: trace-123]",
     )
   })
+
+  test("adds the session id when present", () => {
+    expect(
+      formatErrorContext({ traceId: "trace-123", sessionId: "sess-abc" }),
+    ).toBe("[trace: trace-123, session: sess-abc]")
+    expect(formatErrorContext({ traceId: "", sessionId: "sess-abc" })).toBe(
+      "[session: sess-abc]",
+    )
+  })
+})
+
+describe("setRequestSessionId", () => {
+  test("sets the session id on the active request only", () => {
+    expect(() => setRequestSessionId("outside-request")).not.toThrow()
+
+    requestContext.run(requestStore(), () => {
+      setRequestSessionId(undefined)
+      expect(requestContext.getStore()?.sessionId).toBeUndefined()
+
+      setRequestSessionId("session-xyz")
+      expect(requestContext.getStore()?.sessionId).toBe("session-xyz")
+    })
+  })
 })
 
 describe("installConsolaErrorContext", () => {
@@ -115,6 +142,20 @@ describe("installConsolaErrorContext", () => {
     })
 
     expect(captured[0].args).toEqual(["[trace: req-trace-1]", "Once"])
+  })
+
+  test("includes the session id once a handler sets it", () => {
+    const { instance, captured } = createCapturingConsola()
+
+    requestContext.run(requestStore(), () => {
+      setRequestSessionId("req-sess-1")
+      instance.error("With session")
+    })
+
+    expect(captured[0].args).toEqual([
+      "[trace: req-trace-1, session: req-sess-1]",
+      "With session",
+    ])
   })
 })
 

@@ -13,6 +13,7 @@ import { createHandlerLogger, debugJson } from "~/lib/logger"
 import { fromClaudeDiscoveryModelId } from "~/lib/claude-models"
 import { findEndpointModel } from "~/lib/models"
 import { resolveConfiguredProviderModelAlias } from "~/lib/provider-resolver"
+import { setRequestSessionId } from "~/lib/request-context"
 import { state } from "~/lib/state"
 import type { SubagentMarker } from "~/lib/subagent"
 import type { TokenUsageEndpoint } from "~/lib/token-usage"
@@ -81,6 +82,10 @@ export async function handleCompletionPayload(
   anthropicPayload: AnthropicMessagesPayload,
   dispatchOptions: CompletionPayloadOptions = {},
 ) {
+  let sessionId =
+    dispatchOptions.sessionId ?? getRootSessionId(anthropicPayload, c)
+  setRequestSessionId(sessionId)
+
   const requestedModel = anthropicPayload.model
   if (!dispatchOptions.skipModelMapping) {
     anthropicPayload.model = resolveMappedModel(anthropicPayload.model)
@@ -143,9 +148,6 @@ export async function handleCompletionPayload(
     debugJson(logger, "Detected Subagent marker:", subagentMarker)
   }
 
-  let sessionId =
-    dispatchOptions.sessionId ?? getRootSessionId(anthropicPayload, c)
-
   // claude code and opencode compact / auto-continue detection
   const compactType =
     dispatchOptions.compactType ?? getCompactType(anthropicPayload)
@@ -197,6 +199,7 @@ export async function handleCompletionPayload(
   if (!sessionId) {
     sessionId = getUUID(requestId)
   }
+  setRequestSessionId(sessionId)
   logger.debug("Extracted session ID:", sessionId)
 
   const selectedModel = findEndpointModel(anthropicPayload.model)

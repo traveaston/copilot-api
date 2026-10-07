@@ -6,6 +6,7 @@ export interface RequestContext {
   userAgent: string
   sessionAffinity: string | undefined
   parentSessionId: string | undefined
+  sessionId?: string
 }
 
 const TRACE_ID_MAX_LENGTH = 64
@@ -17,6 +18,13 @@ export const requestContext = {
   getStore: () => asyncLocalStorage.getStore(),
   run: <T>(context: RequestContext, callback: () => T) =>
     asyncLocalStorage.run(context, callback),
+}
+
+export function setRequestSessionId(sessionId: string | undefined): void {
+  const store = asyncLocalStorage.getStore()
+  if (store && sessionId) {
+    store.sessionId = sessionId
+  }
 }
 
 export function generateTraceId(): string {
