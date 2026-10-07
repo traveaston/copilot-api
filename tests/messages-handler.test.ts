@@ -1001,6 +1001,45 @@ describe("messages handler orchestration", () => {
     },
   )
 
+  test.each<{
+    name: string
+    stopSequences: AnthropicMessagesPayload["stop_sequences"]
+  }>([
+    { name: "</severity>", stopSequences: ["</severity>"] },
+    { name: "empty", stopSequences: [] },
+    { name: "omitted in fast mode", stopSequences: undefined },
+  ])(
+    "selects the Claude auto model with stop sequences $name",
+    async ({ stopSequences }) => {
+      claudeAutoModel = "auto-model"
+      selectedModel = {
+        id: "auto-model",
+        supported_endpoints: ["/v1/messages"],
+      }
+
+      const app = createApp()
+      const response = await app.request("/", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "anthropic-beta": "warmup-beta",
+        },
+        body: JSON.stringify(
+          createPayload({
+            stop_sequences: stopSequences,
+            system:
+              "You are a security monitor for autonomous AI coding agents. Check the changes.",
+          }),
+        ),
+      })
+
+      expect(response.status).toBe(200)
+      expect(await response.text()).toBe("messages")
+      expect(findEndpointModel).toHaveBeenCalledTimes(1)
+      expect(findEndpointModel).toHaveBeenCalledWith("auto-model")
+    },
+  )
+
   test("routes the default Claude auto model to the Codex provider", async () => {
     claudeAutoModel = "codex-auto-review"
     modelMappings = { ...actualConfigModule.defaultConfig.modelMappings }
