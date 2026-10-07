@@ -7,7 +7,7 @@ import {
   createAuthMiddleware,
   getConfiguredAdminApiKeys,
 } from "./lib/request-auth"
-import { traceIdMiddleware } from "./lib/trace"
+import { installConsolaErrorContext, traceIdMiddleware } from "./lib/trace"
 import { alphaSearchRoutes } from "./routes/alpha-search/route"
 import { completionRoutes } from "./routes/chat-completions/route"
 import { configRoutes } from "./routes/admin/config/route"
@@ -47,6 +47,7 @@ export function createServer(options: CreateServerOptions = {}): Hono {
   const server = new Hono()
   const networkExposed = options.networkExposed ?? false
 
+  installConsolaErrorContext()
   server.use(traceIdMiddleware)
   server.use(logger())
   server.use(

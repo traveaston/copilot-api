@@ -1,9 +1,14 @@
 import { describe, expect, test } from "bun:test"
+import consola, { type LogObject } from "consola"
 import { Hono } from "hono"
 import { streamSSE } from "hono/streaming"
 
-import { requestContext } from "~/lib/request-context"
-import { traceIdMiddleware } from "~/lib/trace"
+import { requestContext, type RequestContext } from "~/lib/request-context"
+import {
+  formatErrorContext,
+  installConsolaErrorContext,
+  traceIdMiddleware,
+} from "~/lib/trace"
 
 const createTracingApp = () => {
   const app = new Hono()
@@ -28,6 +33,90 @@ const createTracingApp = () => {
 
   return app
 }
+
+const requestStore = (overrides: Partial<RequestContext> = {}) => ({
+  traceId: "req-trace-1",
+  startTime: Date.now(),
+  userAgent: "test-agent",
+  sessionAffinity: undefined,
+  parentSessionId: undefined,
+  ...overrides,
+})
+
+const createCapturingConsola = () => {
+  const captured: Array<Pick<LogObject, "type" | "args">> = []
+  const instance = consola.create({
+    level: 5,
+    reporters: [
+      {
+        log: (logObj) => {
+          captured.push({ type: logObj.type, args: logObj.args })
+        },
+      },
+    ],
+  })
+  installConsolaErrorContext(instance)
+  return { instance, captured }
+}
+
+describe("formatErrorContext", () => {
+  test("returns undefined without a trace id", () => {
+    expect(formatErrorContext(undefined)).toBeUndefined()
+    expect(formatErrorContext({ traceId: "" })).toBeUndefined()
+  })
+
+  test("formats the trace id", () => {
+    expect(formatErrorContext({ traceId: "trace-123" })).toBe(
+      "[trace: trace-123]",
+    )
+  })
+})
+
+describe("installConsolaErrorContext", () => {
+  test("prefixes error and fatal logs inside a request", () => {
+    const { instance, captured } = createCapturingConsola()
+
+    requestContext.run(requestStore(), () => {
+      instance.error("Something went wrong", { detail: "error detail" })
+      instance.fatal("Fatal failure")
+      instance.warn("Warning message")
+      instance.info("Informational message")
+    })
+
+    expect(captured).toEqual([
+      {
+        type: "error",
+        args: [
+          "[trace: req-trace-1]",
+          "Something went wrong",
+          { detail: "error detail" },
+        ],
+      },
+      { type: "fatal", args: ["[trace: req-trace-1]", "Fatal failure"] },
+      { type: "warn", args: ["Warning message"] },
+      { type: "info", args: ["Informational message"] },
+    ])
+  })
+
+  test("leaves errors outside a request unprefixed", () => {
+    const { instance, captured } = createCapturingConsola()
+
+    instance.error("Standalone error")
+
+    expect(captured).toEqual([{ type: "error", args: ["Standalone error"] }])
+  })
+
+  test("prefixes once when installed twice", () => {
+    const { instance, captured } = createCapturingConsola()
+    installConsolaErrorContext(instance)
+
+    requestContext.run(requestStore(), () => {
+      instance.error("Once")
+    })
+
+    expect(captured[0].args).toEqual(["[trace: req-trace-1]", "Once"])
+  })
+})
 
 describe("traceIdMiddleware", () => {
   test("sanitizes a valid client trace id and exposes it via request context", async () => {

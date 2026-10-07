@@ -1,6 +1,48 @@
+import consola, {
+  LogLevels,
+  type ConsolaInstance,
+  type ConsolaReporter,
+} from "consola"
 import type { MiddlewareHandler } from "hono"
 
-import { requestContext, resolveTraceId } from "./request-context"
+import {
+  requestContext,
+  resolveTraceId,
+  type RequestContext,
+} from "./request-context"
+
+export function formatErrorContext(
+  store: Pick<RequestContext, "traceId"> | undefined,
+): string | undefined {
+  return store?.traceId ? `[trace: ${store.traceId}]` : undefined
+}
+
+const withErrorContext = (reporter: ConsolaReporter): ConsolaReporter => ({
+  log(logObj, ctx) {
+    const prefix =
+      logObj.level <= LogLevels.error ?
+        formatErrorContext(requestContext.getStore())
+      : undefined
+    reporter.log(
+      prefix ?
+        { ...logObj, args: [prefix, ...(logObj.args as Array<unknown>)] }
+      : logObj,
+      ctx,
+    )
+  },
+})
+
+const instancesWithErrorContext = new WeakSet<ConsolaInstance>()
+
+// Prefix error and fatal output with the active request's trace id, so a
+// console error can be matched to its handler log lines.
+export function installConsolaErrorContext(
+  instance: ConsolaInstance = consola,
+): void {
+  if (instancesWithErrorContext.has(instance)) return
+  instancesWithErrorContext.add(instance)
+  instance.setReporters(instance.options.reporters.map(withErrorContext))
+}
 
 export const traceIdMiddleware: MiddlewareHandler = async (c, next) => {
   const traceId = resolveTraceId(c.req.header("x-trace-id"))
