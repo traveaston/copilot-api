@@ -4,7 +4,7 @@
 
 ## API Authentication
 
-- **Protected non-admin routes:** All routes except `/`, `/usage-viewer`, and `/usage-viewer/` require authentication when `auth.apiKeys` is configured and non-empty. Non-loopback listeners require a non-empty `auth.apiKeys` configuration at startup and continue failing closed if the keys are later cleared.
+- **Protected non-admin routes:** All routes except `/`, `/usage-viewer`, `/usage-viewer/` and `/usage-viewer/sessions.js` require authentication when `auth.apiKeys` is configured and non-empty. Non-loopback listeners require a non-empty `auth.apiKeys` configuration at startup and continue failing closed if the keys are later cleared.
 - **Admin routes:** All `/admin/*` routes require `auth.adminApiKey`. If it is missing, the server generates one at startup and persists it to `config.json` before serving requests.
 - **Allowed auth headers:**
   - `x-api-key: <your_key>`

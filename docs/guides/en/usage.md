@@ -28,6 +28,7 @@ The dashboard provides a user-friendly interface to view your Copilot usage data
 - **Model Breakdown Table**: A per-model summary of requests, input/output/cache tokens, and estimated cost for the selected period.
 - **Request Events (Paginated)**: A time-sorted list of request event records with pagination support, showing timestamps, models, request IDs, and token counts.
 - **Detailed Information**: See the full JSON response from the API for a detailed breakdown of all available usage statistics.
+- **Theme**: The page follows your system's light or dark setting. The button at the top right cycles Auto → Light → Dark, and the choice is remembered in this browser for this origin.
 - **URL-based Configuration**: You can also specify the API endpoint and period directly via `endpoint` and `period` query parameters. For example:
   `http://localhost:4141/usage-viewer?endpoint=http://your-api-server/usage&period=this_week`
 

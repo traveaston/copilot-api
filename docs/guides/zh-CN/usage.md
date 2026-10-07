@@ -30,6 +30,7 @@
 - **Model Breakdown 表格**：按模型维度列出周期内的请求数、输入/输出/缓存 token 和预计费用。
 - **Request Events 分页列表**：按时间排序的请求事件记录，支持分页浏览，含时间戳、模型、请求 ID 和 token 用量。
 - **Detailed Information**：展示 API 返回的完整 JSON 响应，便于深入分析所有可用统计数据。
+- **主题**：页面默认跟随系统的浅色或深色设置。右上角的按钮在 Auto → Light → Dark 之间切换，所选主题会按 origin 保存在浏览器本地存储中。
 - **URL-based Configuration**：也可通过 `endpoint` 和 `period` 查询参数直接指定 API 端点与时间范围。例如：
   `http://localhost:4141/usage-viewer?endpoint=http://your-api-server/usage&period=this_week`
 

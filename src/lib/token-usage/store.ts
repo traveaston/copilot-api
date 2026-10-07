@@ -82,6 +82,20 @@ export interface TokenUsageModelSummary extends TokenUsageTotals {
   model: string
 }
 
+export interface TokenUsageSessionModelSummary extends TokenUsageModelSummary {
+  first_ms: number
+  last_ms: number
+}
+
+export interface TokenUsageSession extends TokenUsageTotals {
+  byModel: Array<TokenUsageSessionModelSummary>
+  endpoints: Array<TokenUsageEndpoint>
+  first_ms: number
+  key: string
+  last_ms: number
+  sessionless: boolean
+}
+
 export interface TokenUsageEventRecord {
   cache_creation_input_tokens: number
   cache_read_input_tokens: number
@@ -100,6 +114,37 @@ export interface TokenUsageEventRecord {
   total_tokens: number
   trace_id: string
   user_id: string
+}
+
+export interface TokenUsageSessionsPage
+  extends Omit<TokenUsageEventsPage, "items"> {
+  items: Array<TokenUsageSession>
+}
+
+export interface TokenUsageSessionEventRecord extends TokenUsageEventRecord {
+  prev_ms: number | null
+}
+
+export interface TokenUsageSessionEventsPage {
+  has_more: boolean
+  items: Array<TokenUsageSessionEventRecord>
+  model: string | null
+  next_cursor: string | null
+  period: TokenUsagePeriod
+  range: TokenUsageEventsPage["range"]
+  session_id: string | null
+  total: number
+  trace_id: string | null
+}
+
+export type TokenUsageSessionKey = { session_id: string } | { trace_id: string }
+
+export interface TokenUsageSessionEventsQuery {
+  before: { createdAtMs: number; id: number } | null
+  key: TokenUsageSessionKey
+  limit: number
+  model: string | null
+  period: TokenUsagePeriod
 }
 
 export interface TokenUsageSummary {
@@ -556,14 +601,19 @@ function createEmptyDailySummary(
   }
 }
 
-function createEmptyEventsPage(input: {
+/** Clamps a requested page size, or an events limit, to 1..100. */
+function clampPageSize(value: number): number {
+  return Math.min(100, Math.max(1, Math.floor(value)))
+}
+
+export function createEmptyEventsPage(input: {
   page: number
   pageSize: number
   period: TokenUsagePeriod
 }): TokenUsageEventsPage {
   const range = getPeriodRange(input.period)
   const page = Math.max(1, Math.floor(input.page))
-  const pageSize = Math.min(100, Math.max(1, Math.floor(input.pageSize)))
+  const pageSize = clampPageSize(input.pageSize)
 
   return {
     items: [],
@@ -578,6 +628,36 @@ function createEmptyEventsPage(input: {
     },
     total: 0,
     total_pages: 1,
+  }
+}
+
+export function createEmptySessionsPage(input: {
+  page: number
+  pageSize: number
+  period: TokenUsagePeriod
+}): TokenUsageSessionsPage {
+  return { ...createEmptyEventsPage(input), items: [] }
+}
+
+export function createEmptySessionEventsPage(
+  input: TokenUsageSessionEventsQuery,
+): TokenUsageSessionEventsPage {
+  return {
+    has_more: false,
+    items: [],
+    model: input.model,
+    next_cursor: null,
+    period: input.period,
+    range: rangePayload(getPeriodRange(input.period)),
+    ...sessionKeyEchoes(input.key),
+    total: 0,
+  }
+}
+
+function sessionKeyEchoes(key: TokenUsageSessionKey) {
+  return {
+    session_id: "session_id" in key ? key.session_id : null,
+    trace_id: "trace_id" in key ? key.trace_id : null,
   }
 }
 
@@ -999,36 +1079,7 @@ export async function getTokenUsageDailySummary(
   }
 }
 
-export async function getTokenUsageEventsPage(input: {
-  page: number
-  pageSize: number
-  period: TokenUsagePeriod
-}): Promise<TokenUsageEventsPage> {
-  if (!isTokenUsageStorageEnabled()) {
-    return createEmptyEventsPage(input)
-  }
-
-  await flushTokenUsageEvents()
-  const page = Math.max(1, Math.floor(input.page))
-  const pageSize = Math.min(100, Math.max(1, Math.floor(input.pageSize)))
-  const offset = (page - 1) * pageSize
-  const db = await getDb()
-  const range = getPeriodRangeFromDb(db, input.period)
-
-  const totalRow = db
-    .prepare(
-      `
-    SELECT COUNT(*) AS total
-    FROM token_usage_events
-    WHERE created_at_ms >= ? AND created_at_ms < ?
-  `,
-    )
-    .get(range.startMs, range.endMs) as Record<string, unknown> | undefined
-
-  const rows = db
-    .prepare(
-      `
-    SELECT
+const EVENT_COLUMNS_SQL = `
       id,
       created_at_ms,
       created_at_utc,
@@ -1047,7 +1098,38 @@ export async function getTokenUsageEventsPage(input: {
       total_tokens,
       cost_currency,
       total_cost_nanos,
-      cost_source
+      cost_source`
+
+export async function getTokenUsageEventsPage(input: {
+  page: number
+  pageSize: number
+  period: TokenUsagePeriod
+}): Promise<TokenUsageEventsPage> {
+  if (!isTokenUsageStorageEnabled()) {
+    return createEmptyEventsPage(input)
+  }
+
+  await flushTokenUsageEvents()
+  const page = Math.max(1, Math.floor(input.page))
+  const pageSize = clampPageSize(input.pageSize)
+  const offset = (page - 1) * pageSize
+  const db = await getDb()
+  const range = getPeriodRangeFromDb(db, input.period)
+
+  const totalRow = db
+    .prepare(
+      `
+    SELECT COUNT(*) AS total
+    FROM token_usage_events
+    WHERE created_at_ms >= ? AND created_at_ms < ?
+  `,
+    )
+    .get(range.startMs, range.endMs) as Record<string, unknown> | undefined
+
+  const rows = db
+    .prepare(
+      `
+    SELECT ${EVENT_COLUMNS_SQL}
     FROM token_usage_events
     WHERE created_at_ms >= ? AND created_at_ms < ?
     ORDER BY created_at_ms DESC, id DESC
@@ -1073,6 +1155,291 @@ export async function getTokenUsageEventsPage(input: {
     },
     total,
     total_pages: Math.max(1, Math.ceil(total / pageSize)),
+  }
+}
+
+const SESSION_KEY_SQL =
+  "CASE WHEN session_id = '' THEN trace_id ELSE session_id END"
+
+/**
+ * The model as the breakdown and event rows label it: an empty model reads
+ * "unknown", so filtering on that label must also match the empty-model rows.
+ */
+const MODEL_LABEL_SQL = "CASE WHEN model = '' THEN 'unknown' ELSE model END"
+
+const TOTALS_SELECT_SQL = `
+      COUNT(*) AS request_count,
+      COALESCE(SUM(input_tokens), 0) AS input_tokens,
+      COALESCE(SUM(output_tokens), 0) AS output_tokens,
+      COALESCE(SUM(cache_read_input_tokens), 0) AS cache_read_input_tokens,
+      COALESCE(SUM(cache_creation_input_tokens), 0) AS cache_creation_input_tokens,
+      SUM(total_nano_aiu) AS total_nano_aiu,
+      COALESCE(SUM(total_tokens), 0) AS total_tokens,
+      MIN(created_at_ms) AS first_ms,
+      MAX(created_at_ms) AS last_ms`
+
+function sessionIdentity(row: Record<string, unknown>): string {
+  return `${row.sessionless === 1 ? 1 : 0}:${stringFromRow(row, "key")}`
+}
+
+/**
+ * A (session, model) map key. JSON keeps the two parts apart, since session
+ * keys and models can both contain ":".
+ */
+function sessionModelKey(row: Record<string, unknown>): string {
+  return JSON.stringify([sessionIdentity(row), stringFromRow(row, "model")])
+}
+
+function pushCost(
+  map: Map<string, Array<TokenUsageCost>>,
+  id: string,
+  row: Record<string, unknown>,
+): void {
+  const cost = costFromRow(row)
+  if (cost) {
+    map.set(id, [...(map.get(id) ?? []), cost])
+  }
+}
+
+interface SessionDetails {
+  costs: Map<string, Array<TokenUsageCost>>
+  endpoints: Map<string, Array<TokenUsageEndpoint>>
+  models: Map<string, Array<TokenUsageSessionModelSummary>>
+}
+
+/** Per-session and per-(session, model) aggregates for the sessions on a page. */
+function getSessionDetails(
+  db: SqliteDatabase,
+  range: { endMs: number; startMs: number },
+  sessions: Array<Record<string, unknown>>,
+): SessionDetails {
+  const sessionIds = sessions
+    .filter((row) => row.sessionless !== 1)
+    .map((row) => stringFromRow(row, "key"))
+  const traceIds = sessions
+    .filter((row) => row.sessionless === 1)
+    .map((row) => stringFromRow(row, "key"))
+  const marks = (values: Array<string>) => values.map(() => "?").join(", ")
+  const clauses = [
+    ...(sessionIds.length > 0 ? [`session_id IN (${marks(sessionIds)})`] : []),
+    ...(traceIds.length > 0 ?
+      [`(session_id = '' AND trace_id IN (${marks(traceIds)}))`]
+    : []),
+  ]
+  const where = `created_at_ms >= ? AND created_at_ms < ? AND (${clauses.join(" OR ")})`
+  const params = [range.startMs, range.endMs, ...sessionIds, ...traceIds]
+  const identity = `(session_id = '') AS sessionless, ${SESSION_KEY_SQL} AS key`
+
+  const costRows = db
+    .prepare(
+      `SELECT ${identity}, cost_currency,
+        COALESCE(SUM(total_cost_nanos), 0) AS total_cost_nanos
+      FROM token_usage_events
+      WHERE ${where} AND cost_currency IS NOT NULL AND total_cost_nanos IS NOT NULL
+      GROUP BY sessionless, key, cost_currency
+      ORDER BY cost_currency ASC`,
+    )
+    .all(...params) as Array<Record<string, unknown>>
+  const modelRows = db
+    .prepare(
+      `SELECT ${identity}, model, ${TOTALS_SELECT_SQL}
+      FROM token_usage_events
+      WHERE ${where}
+      GROUP BY sessionless, key, model
+      ORDER BY total_tokens DESC, model ASC`,
+    )
+    .all(...params) as Array<Record<string, unknown>>
+  const modelCostRows = db
+    .prepare(
+      `SELECT ${identity}, model, cost_currency,
+        COALESCE(SUM(total_cost_nanos), 0) AS total_cost_nanos
+      FROM token_usage_events
+      WHERE ${where} AND cost_currency IS NOT NULL AND total_cost_nanos IS NOT NULL
+      GROUP BY sessionless, key, model, cost_currency
+      ORDER BY cost_currency ASC`,
+    )
+    .all(...params) as Array<Record<string, unknown>>
+  const endpointRows = db
+    .prepare(
+      `SELECT ${identity}, GROUP_CONCAT(DISTINCT endpoint) AS endpoints
+      FROM token_usage_events
+      WHERE ${where}
+      GROUP BY sessionless, key`,
+    )
+    .all(...params) as Array<Record<string, unknown>>
+
+  const costs = new Map<string, Array<TokenUsageCost>>()
+  for (const row of costRows) pushCost(costs, sessionIdentity(row), row)
+  const modelCosts = new Map<string, Array<TokenUsageCost>>()
+  for (const row of modelCostRows) {
+    pushCost(modelCosts, sessionModelKey(row), row)
+  }
+  const models = new Map<string, Array<TokenUsageSessionModelSummary>>()
+  for (const row of modelRows) {
+    const id = sessionIdentity(row)
+    const model = stringFromRow(row, "model") || "unknown"
+    models.set(id, [
+      ...(models.get(id) ?? []),
+      {
+        ...modelSummaryFromRow(row, modelCosts.get(sessionModelKey(row)) ?? []),
+        first_ms: numberFromRow(row, "first_ms"),
+        last_ms: numberFromRow(row, "last_ms"),
+        model,
+      },
+    ])
+  }
+  const endpoints = new Map<string, Array<TokenUsageEndpoint>>()
+  for (const row of endpointRows) {
+    endpoints.set(
+      sessionIdentity(row),
+      stringFromRow(row, "endpoints")
+        .split(",")
+        .sort() as Array<TokenUsageEndpoint>,
+    )
+  }
+
+  return { costs, endpoints, models }
+}
+
+export async function getTokenUsageSessionsPage(input: {
+  page: number
+  pageSize: number
+  period: TokenUsagePeriod
+}): Promise<TokenUsageSessionsPage> {
+  if (!isTokenUsageStorageEnabled()) {
+    return createEmptySessionsPage(input)
+  }
+
+  await flushTokenUsageEvents()
+  const page = Math.max(1, Math.floor(input.page))
+  const pageSize = clampPageSize(input.pageSize)
+  const db = await getDb()
+  const range = getPeriodRangeFromDb(db, input.period)
+
+  const totalRow = db
+    .prepare(
+      `SELECT COUNT(*) AS total FROM (
+        SELECT 1 FROM token_usage_events
+        WHERE created_at_ms >= ? AND created_at_ms < ?
+        GROUP BY (session_id = ''), ${SESSION_KEY_SQL}
+      )`,
+    )
+    .get(range.startMs, range.endMs) as Record<string, unknown> | undefined
+  const total = numberFromRow(totalRow, "total")
+
+  const sessionRows = db
+    .prepare(
+      `SELECT (session_id = '') AS sessionless, ${SESSION_KEY_SQL} AS key,
+        ${TOTALS_SELECT_SQL}
+      FROM token_usage_events
+      WHERE created_at_ms >= ? AND created_at_ms < ?
+      GROUP BY sessionless, key
+      ORDER BY last_ms DESC, key ASC, sessionless ASC
+      LIMIT ? OFFSET ?`,
+    )
+    .all(range.startMs, range.endMs, pageSize, (page - 1) * pageSize) as Array<
+    Record<string, unknown>
+  >
+
+  const details: SessionDetails =
+    sessionRows.length > 0 ?
+      getSessionDetails(db, range, sessionRows)
+    : { costs: new Map(), endpoints: new Map(), models: new Map() }
+
+  return {
+    items: sessionRows.map((row) => {
+      const id = sessionIdentity(row)
+      return {
+        ...totalsFromRow(row, details.costs.get(id) ?? []),
+        byModel: details.models.get(id) ?? [],
+        endpoints: details.endpoints.get(id) ?? [],
+        first_ms: numberFromRow(row, "first_ms"),
+        key: stringFromRow(row, "key"),
+        last_ms: numberFromRow(row, "last_ms"),
+        sessionless: row.sessionless === 1,
+      }
+    }),
+    page,
+    page_size: pageSize,
+    period: input.period,
+    range: rangePayload(range),
+    total,
+    total_pages: Math.max(1, Math.ceil(total / pageSize)),
+  }
+}
+
+export async function getTokenUsageSessionEventsPage(
+  input: TokenUsageSessionEventsQuery,
+): Promise<TokenUsageSessionEventsPage> {
+  if (!isTokenUsageStorageEnabled()) {
+    return createEmptySessionEventsPage(input)
+  }
+
+  await flushTokenUsageEvents()
+  const limit = clampPageSize(input.limit)
+  const db = await getDb()
+  const range = getPeriodRangeFromDb(db, input.period)
+  const keyFilter =
+    "session_id" in input.key ?
+      { params: [input.key.session_id], sql: "session_id = ?" }
+    : { params: [input.key.trace_id], sql: "session_id = '' AND trace_id = ?" }
+  const modelSql = input.model === null ? "" : ` AND ${MODEL_LABEL_SQL} = ?`
+  const where = `created_at_ms >= ? AND created_at_ms < ? AND ${keyFilter.sql}${modelSql}`
+  const params = [
+    range.startMs,
+    range.endMs,
+    ...keyFilter.params,
+    ...(input.model === null ? [] : [input.model]),
+  ]
+
+  const totalRow = db
+    .prepare(`SELECT COUNT(*) AS total FROM token_usage_events WHERE ${where}`)
+    .get(...params) as Record<string, unknown> | undefined
+  const cursor =
+    input.before ?
+      {
+        params: [
+          input.before.createdAtMs,
+          input.before.createdAtMs,
+          input.before.id,
+        ],
+        sql: "WHERE created_at_ms < ? OR (created_at_ms = ? AND id < ?)",
+      }
+    : { params: [], sql: "" }
+
+  // prev_ms is computed over the whole filtered set before the cursor and
+  // limit apply, so the gap stays correct across page boundaries.
+  const rows = db
+    .prepare(
+      `SELECT * FROM (
+        SELECT ${EVENT_COLUMNS_SQL},
+          LAG(created_at_ms) OVER (ORDER BY created_at_ms, id) AS prev_ms
+        FROM token_usage_events
+        WHERE ${where}
+      )
+      ${cursor.sql}
+      ORDER BY created_at_ms DESC, id DESC
+      LIMIT ?`,
+    )
+    .all(...params, ...cursor.params, limit + 1) as Array<
+    Record<string, unknown>
+  >
+  const hasMore = rows.length > limit
+  const items = rows.slice(0, limit).map((row) => ({
+    ...usageEventFromRow(row),
+    prev_ms: nullableNumberFromRow(row, "prev_ms"),
+  }))
+  const last = items.at(-1)
+
+  return {
+    has_more: hasMore,
+    items,
+    model: input.model,
+    next_cursor: hasMore && last ? `${last.created_at_ms}:${last.id}` : null,
+    period: input.period,
+    range: rangePayload(range),
+    ...sessionKeyEchoes(input.key),
+    total: numberFromRow(totalRow, "total"),
   }
 }
 

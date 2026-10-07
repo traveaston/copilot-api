@@ -119,3 +119,37 @@ describe("network-exposed server policy", () => {
     expect(response.headers.get("access-control-allow-origin")).toBe("*")
   })
 })
+
+describe("usage viewer sessions module", () => {
+  const app = () =>
+    createServer({ networkExposed: true, getApiKeys: () => ["secret"] })
+
+  test("serves the module without credentials", async () => {
+    const response = await app().request(
+      "http://gateway.example.com/usage-viewer/sessions.js",
+    )
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get("content-type")).toBe(
+      "text/javascript; charset=utf-8",
+    )
+    expect(await response.text()).toContain("SESSIONS_PAGE_SIZE")
+  })
+
+  test("still requires credentials for other usage-viewer paths", async () => {
+    const response = await app().request(
+      "http://gateway.example.com/usage-viewer/other.js",
+    )
+
+    expect(response.status).toBe(401)
+  })
+
+  test("keeps the trailing-slash redirect", async () => {
+    const response = await app().request(
+      "http://gateway.example.com/usage-viewer/",
+    )
+
+    expect(response.status).toBe(301)
+    expect(response.headers.get("location")).toBe("/usage-viewer")
+  })
+})
