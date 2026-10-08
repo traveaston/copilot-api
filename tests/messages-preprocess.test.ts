@@ -379,28 +379,32 @@ describe("normalizeSystemMessages", () => {
       { role: "assistant", content: "working on it" },
     ])
     expect(warn).toHaveBeenCalledTimes(1)
-    expect(warn.mock.calls[0]?.[0]).toContain(
-      "removed mcp__old__ping, added mcp__docs__read, added mcp__late__fetch",
-    )
+    expect(warn).toHaveBeenCalledWith({
+      message:
+        "Dropped mid-conversation tool changes Copilot can't load: removed mcp__old__ping, added mcp__docs__read, added mcp__late__fetch; start a new session to load MCP tools",
+      badge: false,
+    })
   })
 
   test("drops tool-only inline system messages and reports each change once", () => {
     const warn = silenceWarn()
+    const addWorkflow = {
+      role: "system",
+      content: [
+        {
+          type: "tool_addition",
+          tool: { type: "tool_reference", name: "Workflow" },
+        },
+      ],
+    } satisfies AnthropicMessagesPayload["messages"][number]
     const createPayload = (): AnthropicMessagesPayload => ({
       model: "claude-opus-4.6",
       max_tokens: 128,
       messages: [
         { role: "user", content: "hello" },
-        {
-          role: "system",
-          content: [
-            {
-              type: "tool_addition",
-              tool: { type: "tool_reference", name: "mcp__once__tool" },
-            },
-          ],
-        },
+        structuredClone(addWorkflow),
         { role: "assistant", content: "done" },
+        structuredClone(addWorkflow),
       ],
     })
 
@@ -413,7 +417,11 @@ describe("normalizeSystemMessages", () => {
       { role: "assistant", content: "done" },
     ])
     expect(warn).toHaveBeenCalledTimes(1)
-    expect(warn.mock.calls[0]?.[0]).toContain("added mcp__once__tool")
+    expect(warn).toHaveBeenCalledWith({
+      message:
+        "Dropped mid-conversation tool changes Copilot can't load: added Workflow",
+      badge: false,
+    })
   })
 
   test("strips inline tool blocks for gpt models while keeping system text", () => {

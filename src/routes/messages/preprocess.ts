@@ -129,23 +129,27 @@ const normalizeSystemContentForMerge = (
 // the history is logged once rather than on every request.
 const reportedInlineToolChanges = new Set<string>()
 
+const inlineToolName = (
+  block: AnthropicToolAdditionBlock | AnthropicToolRemovalBlock,
+): string =>
+  block.tool.type === "tool_definition" ?
+    block.tool.definition.name
+  : block.tool.name
+
 const describeInlineToolChange = (
   block: AnthropicToolAdditionBlock | AnthropicToolRemovalBlock,
-): string => {
-  const name =
-    block.tool.type === "tool_definition" ?
-      block.tool.definition.name
-    : block.tool.name
-  return `${block.type === "tool_addition" ? "added" : "removed"} ${name}`
-}
+): string =>
+  `${block.type === "tool_addition" ? "added" : "removed"} ${inlineToolName(block)}`
 
-// Claude Code announces tools that connect mid-conversation with tool_addition
-// and tool_removal blocks in inline system messages. Copilot rejects these
-// blocks, and moving the tools into tools[] would invalidate the prompt cache,
-// so drop them. MCP_CONNECTION_NONBLOCKING=0 makes Claude Code declare MCP
-// tools upfront in tools[] instead.
+// Claude Code announces tools that load mid-conversation, such as late MCP
+// servers or built-ins like Workflow, with tool_addition and tool_removal
+// blocks in inline system messages. Copilot rejects these blocks, and moving
+// the tools into tools[] would invalidate the prompt cache, so drop them.
+// MCP_CONNECTION_NONBLOCKING=0 makes Claude Code declare MCP tools upfront in
+// tools[] instead.
 const dropInlineToolChanges = (payload: AnthropicMessagesPayload): void => {
-  const dropped: Array<string> = []
+  const dropped: Array<AnthropicToolAdditionBlock | AnthropicToolRemovalBlock> =
+    []
   const messages = payload.messages.flatMap((message) => {
     if (message.role !== "system" || typeof message.content === "string") {
       return [message]
@@ -158,7 +162,7 @@ const dropInlineToolChanges = (payload: AnthropicMessagesPayload): void => {
 
     for (const block of message.content) {
       if (!isTextBlock(block)) {
-        dropped.push(describeInlineToolChange(block))
+        dropped.push(block)
       }
     }
     return content.length > 0 ? [{ ...message, content }] : []
@@ -169,7 +173,7 @@ const dropInlineToolChanges = (payload: AnthropicMessagesPayload): void => {
   }
 
   payload.messages = messages
-  const unreported = dropped.filter(
+  const unreported = [...new Set(dropped.map(describeInlineToolChange))].filter(
     (change) => !reportedInlineToolChanges.has(change),
   )
   if (unreported.length === 0) {
@@ -179,9 +183,17 @@ const dropInlineToolChanges = (payload: AnthropicMessagesPayload): void => {
   for (const change of unreported) {
     reportedInlineToolChanges.add(change)
   }
-  consola.warn(
-    `Dropped mid-conversation tool changes Copilot cannot load (${unreported.join(", ")}); set MCP_CONNECTION_NONBLOCKING=0 in Claude Code and start a new session to load MCP tools upfront`,
+  // Only a late MCP tool can load upfront in a new session; built-ins such as
+  // Workflow arrive mid-conversation regardless of Claude Code settings.
+  const lateMcpTool = unreported.some((change) =>
+    change.startsWith("added mcp__"),
   )
+  // Without a badge, consola keeps the warning on one line with a right-aligned
+  // time, like the request log lines around it.
+  consola.warn({
+    message: `Dropped mid-conversation tool changes Copilot can't load: ${unreported.join(", ")}${lateMcpTool ? "; start a new session to load MCP tools" : ""}`,
+    badge: false,
+  })
 }
 
 const toSystemTextBlocks = (
