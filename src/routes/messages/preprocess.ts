@@ -1,5 +1,7 @@
 import type { Model } from "~/lib/types/models"
 
+import consola from "consola"
+
 import {
   COMPACT_AUTO_CONTINUE,
   COMPACT_REQUEST,
@@ -22,7 +24,10 @@ import type {
   AnthropicInputMessage,
   AnthropicMessage,
   AnthropicMessagesPayload,
+  AnthropicSystemContentBlock,
   AnthropicTextBlock,
+  AnthropicToolAdditionBlock,
+  AnthropicToolRemovalBlock,
   AnthropicToolResultBlock,
   AnthropicToolResultContentBlock,
   AnthropicUserContentBlock,
@@ -53,6 +58,10 @@ const createTextBlock = (text: string): AnthropicTextBlock => ({
   type: "text",
   text,
 })
+
+const isTextBlock = (
+  block: AnthropicSystemContentBlock,
+): block is AnthropicTextBlock => block.type === "text"
 
 const appendTextSegment = (base: string, addition: string): string => {
   if (base.length === 0) {
@@ -96,13 +105,13 @@ const normalizeSystemStringForMerge = (
 }
 
 const normalizeSystemContentForMerge = (
-  content: string | Array<AnthropicTextBlock>,
+  content: string | Array<AnthropicSystemContentBlock>,
 ): string | Array<AnthropicTextBlock> => {
   if (typeof content === "string") {
     return normalizeSystemStringForMerge(content)
   }
 
-  return content.flatMap((block) => {
+  return content.filter(isTextBlock).flatMap((block) => {
     const normalized = normalizeSystemStringForMerge(block.text)
     if (typeof normalized === "string") {
       return [{ ...block, text: normalized }]
@@ -114,6 +123,65 @@ const normalizeSystemContentForMerge = (
       : normalizedBlock,
     )
   })
+}
+
+// Mid-conversation tool changes already reported, so a change that stays in
+// the history is logged once rather than on every request.
+const reportedInlineToolChanges = new Set<string>()
+
+const describeInlineToolChange = (
+  block: AnthropicToolAdditionBlock | AnthropicToolRemovalBlock,
+): string => {
+  const name =
+    block.tool.type === "tool_definition" ?
+      block.tool.definition.name
+    : block.tool.name
+  return `${block.type === "tool_addition" ? "added" : "removed"} ${name}`
+}
+
+// Claude Code announces tools that connect mid-conversation with tool_addition
+// and tool_removal blocks in inline system messages. Copilot rejects these
+// blocks, and moving the tools into tools[] would invalidate the prompt cache,
+// so drop them. MCP_CONNECTION_NONBLOCKING=0 makes Claude Code declare MCP
+// tools upfront in tools[] instead.
+const dropInlineToolChanges = (payload: AnthropicMessagesPayload): void => {
+  const dropped: Array<string> = []
+  const messages = payload.messages.flatMap((message) => {
+    if (message.role !== "system" || typeof message.content === "string") {
+      return [message]
+    }
+
+    const content = message.content.filter(isTextBlock)
+    if (content.length === message.content.length) {
+      return [message]
+    }
+
+    for (const block of message.content) {
+      if (!isTextBlock(block)) {
+        dropped.push(describeInlineToolChange(block))
+      }
+    }
+    return content.length > 0 ? [{ ...message, content }] : []
+  })
+
+  if (dropped.length === 0) {
+    return
+  }
+
+  payload.messages = messages
+  const unreported = dropped.filter(
+    (change) => !reportedInlineToolChanges.has(change),
+  )
+  if (unreported.length === 0) {
+    return
+  }
+
+  for (const change of unreported) {
+    reportedInlineToolChanges.add(change)
+  }
+  consola.warn(
+    `Dropped mid-conversation tool changes Copilot cannot load (${unreported.join(", ")}); set MCP_CONNECTION_NONBLOCKING=0 in Claude Code and start a new session to load MCP tools upfront`,
+  )
 }
 
 const toSystemTextBlocks = (
@@ -204,6 +272,7 @@ export const normalizeSystemMessages = (
   payload: AnthropicMessagesPayload,
 ): void => {
   normalizeClaudeCodeBillingHeaderInSystem(payload)
+  dropInlineToolChanges(payload)
 
   if (payload.model.startsWith("gpt") || payload.model.startsWith("codex")) {
     return
@@ -263,7 +332,7 @@ type IndexedAttachment = {
 }
 
 const getBlockCacheControl = (
-  block: AnthropicMessageContentBlock | undefined,
+  block: AnthropicMessageContentBlock | AnthropicSystemContentBlock | undefined,
 ): AnthropicCacheControl | undefined => {
   if (!block || block.type === "thinking") {
     return undefined

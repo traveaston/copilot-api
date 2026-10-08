@@ -584,6 +584,16 @@ describe("translateAnthropicMessagesToResponsesPayload", () => {
           role: "system",
           content: "late system prompt",
         },
+        {
+          role: "system",
+          content: [
+            { type: "text", text: "tools changed" },
+            {
+              type: "tool_removal",
+              tool: { type: "tool_reference", name: "mcp__old__ping" },
+            },
+          ],
+        },
       ],
     })
 
@@ -602,6 +612,11 @@ describe("translateAnthropicMessagesToResponsesPayload", () => {
         type: "message",
         role: "developer",
         content: "late system prompt",
+      },
+      {
+        type: "message",
+        role: "developer",
+        content: [{ type: "input_text", text: "tools changed" }],
       },
     ])
   })

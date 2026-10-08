@@ -1,4 +1,13 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  spyOn,
+  test,
+} from "bun:test"
+import consola from "consola"
 
 import type { AnthropicMessagesPayload } from "~/lib/types/anthropic"
 
@@ -27,12 +36,18 @@ import {
   stripToolReferenceTurnBoundary,
 } from "~/routes/messages/preprocess"
 
+const silenceWarn = () =>
+  spyOn(consola, "warn").mockImplementation(
+    Object.assign(() => {}, { raw: () => {} }),
+  )
+
 beforeEach(() => {
   mockedReasoningEffort = "xhigh"
 })
 
 afterEach(() => {
   mockedReasoningEffort = "xhigh"
+  mock.restore()
 })
 
 describe("normalizeSystemMessages", () => {
@@ -297,6 +312,144 @@ describe("normalizeSystemMessages", () => {
             text: "hello",
           },
         ],
+      },
+    ])
+  })
+
+  test("drops inline tool changes and leaves tools untouched", () => {
+    const warn = silenceWarn()
+    const tools: AnthropicMessagesPayload["tools"] = [
+      { name: "Bash", input_schema: { type: "object" } },
+      {
+        name: "mcp__docs__read",
+        input_schema: { type: "object" },
+        defer_loading: true,
+      },
+      { name: "mcp__old__ping", input_schema: { type: "object" } },
+    ]
+    const payload: AnthropicMessagesPayload = {
+      model: "claude-opus-4.6",
+      max_tokens: 128,
+      tools: structuredClone(tools),
+      messages: [
+        { role: "user", content: "hello" },
+        {
+          role: "system",
+          content: [
+            { type: "text", text: "New tools are available" },
+            {
+              type: "tool_removal",
+              tool: { type: "tool_reference", name: "mcp__old__ping" },
+            },
+            {
+              type: "tool_addition",
+              tool: { type: "tool_reference", name: "mcp__docs__read" },
+            },
+            {
+              type: "tool_addition",
+              tool: {
+                type: "tool_definition",
+                definition: {
+                  name: "mcp__late__fetch",
+                  input_schema: { type: "object" },
+                },
+              },
+              cache_control: { type: "ephemeral" },
+            },
+          ],
+        },
+        { role: "assistant", content: "working on it" },
+      ],
+    }
+
+    normalizeSystemMessages(payload)
+
+    expect(payload.tools).toEqual(tools)
+    expect(payload.messages).toEqual([
+      {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: "<system-reminder>\nNew tools are available\n</system-reminder>",
+          },
+          { type: "text", text: "hello" },
+        ],
+      },
+      { role: "assistant", content: "working on it" },
+    ])
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(warn.mock.calls[0]?.[0]).toContain(
+      "removed mcp__old__ping, added mcp__docs__read, added mcp__late__fetch",
+    )
+  })
+
+  test("drops tool-only inline system messages and reports each change once", () => {
+    const warn = silenceWarn()
+    const createPayload = (): AnthropicMessagesPayload => ({
+      model: "claude-opus-4.6",
+      max_tokens: 128,
+      messages: [
+        { role: "user", content: "hello" },
+        {
+          role: "system",
+          content: [
+            {
+              type: "tool_addition",
+              tool: { type: "tool_reference", name: "mcp__once__tool" },
+            },
+          ],
+        },
+        { role: "assistant", content: "done" },
+      ],
+    })
+
+    const first = createPayload()
+    normalizeSystemMessages(first)
+    normalizeSystemMessages(createPayload())
+
+    expect(first.messages).toEqual([
+      { role: "user", content: "hello" },
+      { role: "assistant", content: "done" },
+    ])
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(warn.mock.calls[0]?.[0]).toContain("added mcp__once__tool")
+  })
+
+  test("strips inline tool blocks for gpt models while keeping system text", () => {
+    silenceWarn()
+    const payload: AnthropicMessagesPayload = {
+      model: "gpt-5.4",
+      max_tokens: 128,
+      messages: [
+        { role: "user", content: "hello" },
+        {
+          role: "system",
+          content: [
+            { type: "text", text: "New tools are available" },
+            {
+              type: "tool_addition",
+              tool: {
+                type: "tool_definition",
+                definition: {
+                  name: "mcp__gpt__fetch",
+                  input_schema: { type: "object" },
+                },
+              },
+            },
+          ],
+        },
+      ],
+    }
+
+    normalizeSystemMessages(payload)
+
+    expect(payload.tools).toBeUndefined()
+    expect(payload.messages).toEqual([
+      { role: "user", content: "hello" },
+      {
+        role: "system",
+        content: [{ type: "text", text: "New tools are available" }],
       },
     ])
   })

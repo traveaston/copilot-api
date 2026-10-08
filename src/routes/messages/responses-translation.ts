@@ -255,7 +255,9 @@ const translateSystemMessage = (
     return [createMessage("developer", message.content)]
   }
 
-  const content = message.content.map((block) => createTextContent(block.text))
+  const content = message.content.flatMap((block) =>
+    block.type === "text" ? [createTextContent(block.text)] : [],
+  )
   return content.length > 0 ? [createMessage("developer", content)] : []
 }
 

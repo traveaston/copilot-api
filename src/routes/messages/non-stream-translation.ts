@@ -200,7 +200,11 @@ function handleSystemPrompt(
 function handleInlineSystemMessage(message: AnthropicSystemMessage): Message {
   return {
     role: "user",
-    content: mapContent(message.content),
+    content: mapContent(
+      typeof message.content === "string" ?
+        message.content
+      : message.content.filter((block) => block.type === "text"),
+    ),
   }
 }
 

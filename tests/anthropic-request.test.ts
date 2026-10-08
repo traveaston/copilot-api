@@ -307,7 +307,13 @@ describe("Anthropic to OpenAI translation logic", () => {
         { role: "system", content: "Follow the repo style." },
         {
           role: "system",
-          content: [{ type: "text", text: "Keep the change focused." }],
+          content: [
+            { type: "text", text: "Keep the change focused." },
+            {
+              type: "tool_addition",
+              tool: { type: "tool_reference", name: "mcp__docs__read" },
+            },
+          ],
         },
       ],
       max_tokens: 128,

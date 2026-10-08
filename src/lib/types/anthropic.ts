@@ -127,9 +127,38 @@ export interface AnthropicAssistantMessage {
   content: string | Array<AnthropicAssistantContentBlock>
 }
 
+// Claude Code announces tools loaded or unloaded mid-conversation with these
+// blocks inside inline system messages.
+export interface AnthropicToolNameReference {
+  type: "tool_reference"
+  name: string
+}
+
+export interface AnthropicToolDefinitionReference {
+  type: "tool_definition"
+  definition: AnthropicTool
+}
+
+export interface AnthropicToolAdditionBlock {
+  type: "tool_addition"
+  tool: AnthropicToolNameReference | AnthropicToolDefinitionReference
+  cache_control?: AnthropicCacheControl | null
+}
+
+export interface AnthropicToolRemovalBlock {
+  type: "tool_removal"
+  tool: AnthropicToolNameReference
+  cache_control?: AnthropicCacheControl | null
+}
+
+export type AnthropicSystemContentBlock =
+  | AnthropicTextBlock
+  | AnthropicToolAdditionBlock
+  | AnthropicToolRemovalBlock
+
 export interface AnthropicSystemMessage {
   role: "system"
-  content: string | Array<AnthropicTextBlock>
+  content: string | Array<AnthropicSystemContentBlock>
 }
 
 export type AnthropicMessage = AnthropicUserMessage | AnthropicAssistantMessage
